@@ -14,7 +14,8 @@ class Trend(BaseStrategy):
                  arm_timeout: int = 10, retest_eps_pct: float = 0.25, reconfirm_mult_1: float = 0.0003,
                  reconfirm_mult_2: float = 0.0008, sl_mult_atr: float = 2.4, tp_mult_sl: float = 1.8,
                  tp_mult_atr: float = 3.0, partial_tp_atr_mult: float = 1.2, partial_sl_offset_atr_mult: float = 0.3,
-                 sl_cooldown_duration: int = 3, allow_shorts: bool = True):
+                 sl_cooldown_duration: int = 3, allow_shorts: bool = True,
+                 min_pmax: float = 0.40, max_dist_ma20_atr: float = 1.6, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0):
         super().__init__(name="Trend", risk_mult=risk_mult)
         self.atr_pct_80_percentile = atr_pct_80_percentile
         self.position_open = False
@@ -45,6 +46,11 @@ class Trend(BaseStrategy):
         self.partial_sl_offset_atr_mult = partial_sl_offset_atr_mult
         self.allow_shorts = allow_shorts
 
+        self.min_pmax = min_pmax
+        self.max_dist_ma20_atr = max_dist_ma20_atr
+        self.time_stop_bars = time_stop_bars
+        self.time_stop_mfe_atr = time_stop_mfe_atr
+
     def on_stop(self):
         self.cooldown = self.cooldown_duration
         self.armed_level = None
@@ -60,11 +66,11 @@ class Trend(BaseStrategy):
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
         
-        if lab != "trend" or pmax < 0.40:
+        if lab != "trend" or pmax < self.min_pmax:
             self.armed_level = None
             self.armed_bars = 0
             self.retested = False
-            return Signal("flat", 0.0, None, None, reason="not_trend")
+            return Signal("flat", 0.0, None, None, reason="not_trend_or_low_pmax")
 
         if self.cooldown > 0:
             self.cooldown -= 1
@@ -83,6 +89,12 @@ class Trend(BaseStrategy):
 
         ma_fast = df["close"].rolling(20).mean()
         ma_slow = df["close"].rolling(50).mean()
+
+        # overextension guard
+        ma20 = ma_fast.iat[-1]
+        dist_ma20_atr = abs(close - ma20) / atr_abs if atr_abs > 0 else 0
+        if dist_ma20_atr > self.max_dist_ma20_atr:
+            return Signal("flat", 0.0, None, None, reason="overextended_vs_ma20")
         up = ma_fast.iat[-1] > ma_slow.iat[-1]
         sep = abs(ma_fast.iat[-1] - ma_slow.iat[-1]) / max(close, 1e-9)
         sep_min = max(0.0006, 0.35 * float(feats["vol"].iat[-1]), 0.35 * (atr_abs/close))
@@ -145,17 +157,18 @@ class Trend(BaseStrategy):
                     return Signal("flat", 0.0, None, None, reason="shorts_off")
 
                 # SL calculation
-                sl_pts = max(close - swing_low_9, self.sl_mult_atr * atr_abs)
+                sl_pts = max(close - swing_low_9, 2.6 * atr_abs)
                 
                 # TP calculation
-                tp_pts = max(self.tp_mult_sl * sl_pts, self.tp_mult_atr * atr_abs)
+                tp_pts = max(2.0 * sl_pts, 3.2 * atr_abs)
                 
                 # Partial TP and SL offset
                 partial_tp_pts = self.partial_tp_atr_mult * atr_abs
                 partial_sl_offset_atr_mult = self.partial_sl_offset_atr_mult
 
                 self.armed_level = None; self.armed_bars = 0; self.retested = False
-                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=f"retest_and_reconf")
+                rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
+                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=f"retest_and_reconf", rr=rr)
 
             return Signal("flat", 0.0, None, None, reason="armed_wait")
 

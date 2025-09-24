@@ -206,7 +206,7 @@ def main(config_path: str, limit_bars: int):
             broker.enter_or_flip(
                 side=1 if sig.side == "long" else -1, qty=qty, price=price,
                 sl_pts=sig.sl_pts, tp_pts=sig.tp_pts, partial_tp_pts=sig.partial_tp_pts, 
-                ts=current_dt, strategy_name=strat_name, atr=atr_t, partial_sl_offset_atr_mult=sig.partial_sl_offset_atr_mult
+                ts=current_dt, strategy_name=strat_name, atr=atr_t, partial_sl_offset_atr_mult=sig.partial_sl_offset_atr_mult, rr=sig.rr
             )
             if was_flat:
                 broker.entries_count += 1

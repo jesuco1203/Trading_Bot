@@ -12,7 +12,7 @@ class MeanRevert(BaseStrategy):
                  sl_mult_atr: float = 1.3, sl_swing_low_bars: int = 3,
                  tp_mult_sl: float = 1.4, tp_mult_atr: float = 1.8,
                  partial_tp_atr_mult: float = 0.8, partial_sl_offset_atr_mult: float = 0.1,
-                 local_cooldown_duration: int = 14):
+                 local_cooldown_duration: int = 14, gate_adx_max: float = 20.0):
         super().__init__(name="MeanRevert", risk_mult=risk_mult)
         self.position_open = False
         self.entry_price = 0.0
@@ -38,6 +38,7 @@ class MeanRevert(BaseStrategy):
         self.partial_tp_atr_mult = partial_tp_atr_mult
         self.partial_sl_offset_atr_mult = partial_sl_offset_atr_mult
         self.blocks = {} # Initialize blocks dictionary
+        self.gate_adx_max = gate_adx_max # New assignment
 
     def print_summary(self, trades: list):
         print("--- MeanRevert Block Summary ---")
@@ -61,16 +62,28 @@ class MeanRevert(BaseStrategy):
         rsi = float(feats["rsi14"].iat[-1])
 
         # Gate conditions
-        if not (lab == "mr" and pmax >= self.gate_pmax_th and adx < self.gate_adx_th and atr_pct <= atr_p85):
-            return Signal("flat", 0.0, None, None, reason="mr_gate_fail")
+        gate_ok = True
+        if lab != "mr":
+            self.blocks["gate_not_mr"] = self.blocks.get("gate_not_mr",0)+1; gate_ok = False
+        if pmax < self.gate_pmax_th:
+            self.blocks["gate_pmax_low"] = self.blocks.get("gate_pmax_low",0)+1; gate_ok = False
+        if adx >= self.gate_adx_max:
+            self.blocks["gate_adx_high"] = self.blocks.get("gate_adx_high",0)+1; gate_ok = False
+        if atr_pct > atr_p85:
+            self.blocks["gate_atr_high"] = self.blocks.get("gate_atr_high",0)+1; gate_ok = False
+
+        if not gate_ok:
+            return Signal("flat",0.0,None,None,reason="mr_gate_fail")
 
         if self.cooldown > 0:
             self.cooldown -= 1
+            self.blocks["cooldown"] = self.blocks.get("cooldown", 0) + 1
             return Signal("flat", 0.0, None, None, reason="cooldown")
 
         # Estiramiento (Stretch) condition
         dist_sma = abs(close - sma20) / atr_abs if atr_abs > 0 else 0
         if dist_sma < self.dist_sma_mult:
+            self.blocks["too_close_to_sma"] = self.blocks.get("too_close_to_sma", 0) + 1
             return Signal("flat", 0.0, None, None, reason="too_close_to_sma")
 
         o, h, l, c = map(float, (df["open"].iat[-1], df["high"].iat[-1], df["low"].iat[-1], df["close"].iat[-1]))
@@ -106,8 +119,10 @@ class MeanRevert(BaseStrategy):
 
             self.cooldown = self.cooldown_duration # Use configurable cooldown
             # self.last_entry_i = ctx["i"] # This is handled by broker
-            return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=("z_rsi_candle" if long_a else "bb_reentry"))
+            rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
+            return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=("z_rsi_candle" if long_a else "bb_reentry"), rr=rr)
 
+        self.blocks["no_setup"] = self.blocks.get("no_setup", 0) + 1
         return Signal("flat", 0.0, None, None, reason="no_setup")
 
     def warmup_bars(self) -> int:

@@ -12,6 +12,7 @@ class Signal:
     partial_tp_pts: Optional[float] = None
     partial_sl_offset_atr_mult: Optional[float] = None
     reason: Optional[str] = None
+    rr: Optional[float] = None # New
 
 class BaseStrategy:
     def __init__(self, name: str, risk_mult: float = 1.0):
@@ -50,10 +51,11 @@ class BaseStrategy:
         hit_rate = (wins / entries) * 100 if entries > 0 else 0.0
         
         rr_ratios = []
-        for trade in strat_trades:
-            # Ensure sl_pts and tp_pts exist and sl_pts is not zero to avoid division by zero
-            if trade.get('sl_pts') is not None and trade.get('tp_pts') is not None and trade['sl_pts'] > 0:
-                rr_ratios.append(trade['tp_pts'] / trade['sl_pts'])
+        for ts, trade_group in grouped_trades.items():
+            # Find the initial entry trade to get its RR
+            initial_entry_trade = next((t for t in trade_group if not t.get('partial')), None)
+            if initial_entry_trade and initial_entry_trade.get('rr') is not None:
+                rr_ratios.append(initial_entry_trade['rr'])
         rr_avg = sum(rr_ratios) / len(rr_ratios) if rr_ratios else 0.0
 
         print(f"--- {self.name} Summary ---")

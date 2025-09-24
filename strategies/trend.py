@@ -15,7 +15,7 @@ class Trend(BaseStrategy):
                  arm_timeout: int = 10, retest_eps_pct: float = 0.25, reconfirm_mult_1: float = 0.0003,
                  reconfirm_mult_2: float = 0.0008, sl_mult_atr: float = 2.4, tp_mult_sl: float = 1.8,
                  tp_mult_atr: float = 3.0, partial_tp_atr_mult: float = 1.2, partial_sl_offset_atr_mult: float = 0.3,
-                 sl_cooldown_duration: int = 3, allow_shorts: bool = True,
+                 sl_cooldown_duration: int = 8, allow_shorts: bool = True,
                  min_pmax: float = 0.40, max_dist_ma20_atr: float = 1.6, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0,
                  ma_fast_len: int = 20, ma_slow_len: int = 50, sep_min: float = 0.002):
         super().__init__(name="Trend", risk_mult=risk_mult, time_stop_bars=time_stop_bars, time_stop_mfe_atr=time_stop_mfe_atr)
@@ -32,6 +32,8 @@ class Trend(BaseStrategy):
         self.armed_bars = 0
         self.retested = False
         self.arms = 0 # Initialize arms counter
+        self.reconf_bar = -1            # ← default
+        self.waiting_pullback = False    # ← default
 
         # New parameters for BTC 4H Trend
         self.arm_rbody_th = arm_rbody_th
@@ -54,13 +56,19 @@ class Trend(BaseStrategy):
         self.time_stop_mfe_atr = time_stop_mfe_atr
         self.ma_fast_len = ma_fast_len
         self.ma_slow_len = ma_slow_len
-        self.sep_min = sep_min
+        self.sep_min = getattr(self, "sep_min", 0.0010)
 
     def on_stop(self):
         self.cooldown = self.cooldown_duration
-        self.armed_level = None
-        self.retested = False
+        self._disarm()
         logging.info(f"STOP-LOSS hit. Cooldown activated for {self.cooldown} bars.")
+
+    def _disarm(self):
+        self.armed_level = None
+        self.armed_bars  = 0
+        self.retested    = False
+        self.waiting_pullback = False
+        self.reconf_bar  = -1
 
 
 
@@ -70,39 +78,35 @@ class Trend(BaseStrategy):
     def signal(self, ctx: dict) -> Signal:
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
-        
-        if lab != "trend" or pmax < self.min_pmax:
-            self.armed_level = None
-            self.armed_bars = 0
-            self.retested = False
-            return Signal("flat", 0.0, None, None, reason="not_trend")
-
-        if self.cooldown > 0:
-            self.cooldown -= 1
-            return Signal("flat", 0.0, None, None, reason="cooldown")
 
         df = ctx["df"]; feats = ctx["feats"]
-        close = float(df["close"].iat[-1])
-        atr_abs = float(feats["atr"].iat[-1])
+
+        # === en strategies/trend.py, dentro de signal() ===
+        i   = int(ctx.get("i", 0))
+        o   = float(df["open"].iat[-1])
+        h   = float(df["high"].iat[-1])
+        l   = float(df["low"].iat[-1])
+        cl  = float(df["close"].iat[-1])
+
+        atr_abs = float(feats["atr"].iat[-1])                 # ATR en precio
         adx_now = float(feats["adx"].iat[-1])
-        adx_prev = float(feats["adx"].iat[-2])
-        di_plus = float(feats.get("di_plus", 0.0).iat[-1])
-        di_minus = float(feats.get("di_minus", 0.0).iat[-1])
+        adx_prev= float(feats["adx"].iat[-2]) if len(feats["adx"])>=2 else adx_now
+        ma_fast = feats.get("ma_fast") or df["close"].rolling(self.ma_fast_len, min_periods=self.ma_fast_len).mean()
+        ma_slow = feats.get("ma_slow") or df["close"].rolling(self.ma_slow_len, min_periods=self.ma_slow_len).mean()
 
         if atr_abs <= 0:
             return Signal("flat", 0.0, None, None, reason="low_atr")
 
-        atr_pct = (atr_abs / close) if close > 0 else 0.0
+        atr_pct = (atr_abs / cl) if cl > 0 else 0.0
         atr_p90 = ctx["atr_pct_p90"]
         if atr_pct > atr_p90:
             return Signal("flat", 0.0, None, None, reason="atr_vol_too_high")
 
-        ma_fast = df["close"].rolling(window=self.ma_fast_len, min_periods=self.ma_fast_len).mean()
-        ma_slow = df["close"].rolling(window=self.ma_slow_len, min_periods=self.ma_slow_len).mean()
+
 
         # overextension guard
         ma20 = ma_fast.iat[-1]
-        dist_ma20_atr = abs(close - ma20) / atr_abs if atr_abs > 0 else 0
+        dist_ma20_atr = abs(cl - ma20) / atr_abs if atr_abs > 0 else 0
         if dist_ma20_atr > self.max_dist_ma20_atr:
             return Signal("flat", 0.0, None, None, reason="overextended_vs_ma20")
         
@@ -119,9 +123,9 @@ class Trend(BaseStrategy):
 
         slope_fast = ma_fast.iat[-1] - ma_fast.iat[-4]
         slope_slow = ma_slow.iat[-1] - ma_slow.iat[-4]
-        pullback_long = (df["low"].iat[-1] <= ma_fast.iat[-1] * (1.0 + 0.0025)) and (close > ma_fast.iat[-1])
+        pullback_long = (df["low"].iat[-1] <= ma_fast.iat[-1] * (1.0 + 0.0025)) and (cl > ma_fast.iat[-1])
 
-        o, h, l, cl = map(float, (df["open"].iat[-1], df["high"].iat[-1], df["low"].iat[-1], df["close"].iat[-1]))
+
         rng = max(h - l, 1e-9)
         rbody = max(cl - o, 0.0) / rng if rng > 0 else 0
         long_wick = (o - l)/rng >= 0.45
@@ -161,8 +165,8 @@ class Trend(BaseStrategy):
             # Retest condition
             RETEST_EPS = 0.0025    # 0.25%
             touched = (l <= level*(1 + (-RETEST_EPS)) <= h) or (abs(l - level)/level <= RETEST_EPS)
-            logging.debug(f"RETEST_DEBUG i={ctx['i']} touched={touched} l={l:.2f} level={level:.2f} eps={RETEST_EPS:.4f} ma_fast={ma_fast.iat[-1]:.2f} close={close:.2f}")
-            if touched and close > level and close > ma_fast.iat[-1]:
+            logging.debug(f"RETEST_DEBUG i={ctx['i']} touched={touched} l={l:.2f} level={level:.2f} eps={RETEST_EPS:.4f} ma_fast={ma_fast.iat[-1]:.2f} close={cl:.2f}")
+            if touched and cl > level and cl > ma_fast.iat[-1]:
                 self.retested = True
             
             TIMEOUT_BARS = 16
@@ -174,36 +178,59 @@ class Trend(BaseStrategy):
             RECONF_CLOSE_BPS = 30   # 0.30% por cierre
             RECONF_HIGH_BPS  = 8    # 0.08% por ruptura de máximo previo
 
-            reconf_close = close > level * (1 + RECONF_CLOSE_BPS/10000.0)
+            reconf_close = cl > level * (1 + RECONF_CLOSE_BPS/10000.0)
             reconf_high  = h  > prev_high * (1 + RECONF_HIGH_BPS/10000.0)
             reconf = reconf_close or reconf_high
-            logging.debug(f"RECONF_DEBUG i={ctx['i']} reconf={reconf} close={close:.2f} level={level:.2f} reconf_close={reconf_close} h={h:.2f} prev_high={prev_high:.2f} reconf_high={reconf_high}")
+            logging.debug(f"RECONF_DEBUG i={ctx['i']} reconf={reconf} close={cl:.2f} level={level:.2f} reconf_close={reconf_close} h={h:.2f} prev_high={prev_high:.2f} reconf_high={reconf_high}")
 
             lose_struct = not (sep >= 0.8 * self.sep_min and slope_fast > 0 and slope_slow >= 0)
             if lose_struct:
-                self.armed_level = None; self.armed_bars = 0; self.retested = False
+                self._disarm()
                 return Signal("flat", 0.0, None, None, reason="disarm_long_losestruct")
 
-            if self.retested and reconf:
+            # Guardia de vela extendida
+            tr = h - l
+            if (tr >= 1.3 * atr_abs) or (rbody >= 0.85):
+                return Signal("flat", 0.0, None, None, reason="reconf_extended_bar")
+
+            if self.retested and (reconf_close or reconf_high):
                 # SHORTS OFF check
                 if not self.allow_shorts and side == "short":
+                    self._disarm()
                     return Signal("flat", 0.0, None, None, reason="shorts_off")
+                self.waiting_pullback = True
+                self.reconf_bar = ctx['i']
+                return Signal("flat", 0.0, None, None, reason="waiting_pullback")
 
-                # SL calculation
-                swing_low = float(df["low"].iloc[-9:-1].min())
-                sl_pts = max(close - swing_low, 2.4 * atr_abs)
-                
-                # TP calculation
-                tp_pts = max(1.8 * sl_pts, 3.0 * atr_abs)    # RR sano
-                
-                # Partial TP and SL offset
-                partial_tp_pts = 1.2 * atr_abs             # parcial 4H un poco más lejos
-                partial_sl_offset_atr_mult = 0.3         # SL a BE+0.3*ATR tras parcial
+            if self.waiting_pullback:
+                PULLBACK_ATR = 0.20   # retest del nivel tras el breakout
+                PULLBACK_TIMEOUT = 6      # barras para esperar el retest tras reconfirm
 
-                self.armed_level = None; self.armed_bars = 0; self.retested = False
-                rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
-                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=f"reconf_ok", rr=rr)
+                pull = level + PULLBACK_ATR * atr_abs # level + 0.2*ATR
+                touched_pull = (l <= pull <= h)
+                bullish_reject = (cl > o) and ((o - l)/(h - l + 1e-9) >= 0.45)
 
-            return Signal("flat", 0.0, None, None, reason="waiting_reconf")
+                if touched_pull and bullish_reject:
+                    # SL calculation
+                    swing_low = float(df["low"].iloc[-9:-1].min())
+                    sl_pts = max(close - (swing_low - 0.6 * atr_abs), 3.0 * atr_abs)     # ↑ SL para 4H
+                    
+                    # TP calculation
+                    tp_pts = max(1.8 * sl_pts, 3.0 * atr_abs)
+                    
+                    # Partial TP and SL offset
+                    partial_tp_pts = 1.2 * atr_abs
+                    partial_sl_offset_atr_mult = 0.3
+
+                    self._disarm()
+                    rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
+                    return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason="bo_retest_enter", rr=rr)
+
+                # timeout del pullback
+                if ctx['i'] - self.reconf_bar >= PULLBACK_TIMEOUT:
+                    self._disarm()
+                    return Signal("flat", 0.0, None, None, reason="pullback_timeout")
+
+            return Signal("flat", 0.0, None, None, reason="waiting_retest_or_reconf")
 
         return Signal("flat", 0.0, None, None, reason="no_setup")

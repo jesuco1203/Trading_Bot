@@ -315,15 +315,22 @@ def main(config_path: str, limit_bars: int, start_index: int = 0):
     # Report aggregated results
     logging.info("\n--- Walk-Forward Validation Results ---")
     for i, res in enumerate(results):
-        logging.info(f"Window {i+1}: Net PnL={res['net_pnl']:.2f}, Total Trades={res['total_trades']}, Hit Rate={res['hit_rate']:.2%}")
-        logging.info(f"  Trend PnL={res['trend_pnl']:.2f}, MR PnL={res['mr_pnl']:.2f}")
-        logging.info(f"  Trend RR Avg={res['trend_rr_avg']:.2f}, MR RR Avg={res['mr_rr_avg']:.2f}")
-        logging.info(f"  Trend Avg Bars Open={res['trend_avg_bars_open']:.0f}, MFE ATR Avg={res['trend_mfe_atr_avg']:.2f}, MAE ATR Avg={res['trend_mae_atr_avg']:.2f}")
-        logging.info(f"  MR Avg Bars Open={res['mr_avg_bars_open']:.0f}, MFE ATR Avg={res['mr_mfe_atr_avg']:.2f}, MAE ATR Avg={res['mr_mae_atr_avg']:.2f}")
-        if res['mr_block_summary']:
-            logging.info("  MR Block Summary:")
-            for reason, count in res['mr_block_summary'].items():
-                logging.info(f"    {reason}: {count}")
+        if res['total_trades'] == 0:
+            logging.info(f"Window {i+1}: Net PnL=0.00, Total Trades=0, Hit Rate=0.00%")
+            logging.info("  Trend PnL=0.00, MR PnL=0.00")
+            logging.info("  Trend RR Avg=0.00, MR RR Avg=0.00")
+            logging.info("  Trend Avg Bars Open=0, MFE ATR Avg=0.00, MAE ATR Avg=0.00")
+            logging.info("  MR Avg Bars Open=0, MFE ATR Avg=0.00, MAE ATR Avg=0.00")
+        else:
+            logging.info(f"Window {i+1}: Net PnL={res['net_pnl']:.2f}, Total Trades={res['total_trades']}, Hit Rate={res['hit_rate']:.2%}")
+            logging.info(f"  Trend PnL={res['trend_pnl']:.2f}, MR PnL={res['mr_pnl']:.2f}")
+            logging.info(f"  Trend RR Avg={res['trend_rr_avg']:.2f}, MR RR Avg={res['mr_rr_avg']:.2f}")
+            logging.info(f"  Trend Avg Bars Open={res['trend_avg_bars_open']:.0f}, MFE ATR Avg={res['trend_mfe_atr_avg']:.2f}, MAE ATR Avg={res['trend_mae_atr_avg']:.2f}")
+            logging.info(f"  MR Avg Bars Open={res['mr_avg_bars_open']:.0f}, MFE ATR Avg={res['mr_mfe_atr_avg']:.2f}, MAE ATR Avg={res['mr_mae_atr_avg']:.2f}")
+            if res['mr_block_summary']:
+                logging.info("  MR Block Summary:")
+                for reason, count in res['mr_block_summary'].items():
+                    logging.info(f"    {reason}: {count}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI-Driven Trading Bot Backtester")

@@ -102,17 +102,16 @@ class PaperBroker:
             return 0.0
 
         # Update bars_open, mfe_atr, and mae_atr
-        self.pos.bars_open += 1
         atr_est = self.pos.entry_atr # Assuming entry_atr is a good estimate for current ATR
         if atr_est:
-            adv = (high - self.pos.entry) if self.pos.side > 0 else (self.pos.entry - low)
-            atr_units = (adv / atr_est) if atr_est else 0.0
-            self.pos.mfe_atr = max(self.pos.mfe_atr, atr_units)
+            rng_high = high if self.pos.side>0 else self.pos.entry
+            rng_low  = low  if self.pos.side>0 else self.pos.entry
+            adv = (rng_high - self.pos.entry) if self.pos.side>0 else (self.pos.entry - rng_low)
+            ret = (self.pos.entry - rng_low) if self.pos.side>0 else (rng_high - self.pos.entry)
 
-            # Calculate MAE in ATR units
-            adv_mae = (self.pos.entry - low) if self.pos.side > 0 else (high - self.pos.entry)
-            mae_atr_units = (adv_mae / atr_est) if atr_est else 0.0
-            self.pos.mae_atr = max(self.pos.mae_atr, mae_atr_units)
+            self.pos.mfe_atr = max(self.pos.mfe_atr, adv / max(atr_est,1e-9))
+            self.pos.mae_atr = max(self.pos.mae_atr, ret / max(atr_est,1e-9))
+        self.pos.bars_open += 1
 
         # Time-stop logic
         if self.pos.bars_open >= 6 and self.pos.mfe_atr < 0.6:  # 6 velas sin alza ≥0.6*ATR

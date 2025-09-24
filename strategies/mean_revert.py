@@ -5,12 +5,39 @@ import pandas as pd
 import numpy as np
 
 class MeanRevert(BaseStrategy):
-    def __init__(self):
-        super().__init__("MeanRevert", risk_mult=0.6)
+    def __init__(self, risk_mult: float = 1.0,
+                 gate_pmax_th: float = 0.40, gate_adx_th: float = 16.0, gate_atr_pct_th: float = 0.85,
+                 dist_sma_mult: float = 1.1, signal_z_th: float = -1.0, signal_rsi_th: float = 45.0,
+                 signal_rbody_th: float = 0.45, signal_lower_wick_th: float = 0.55,
+                 sl_mult_atr: float = 1.3, sl_swing_low_bars: int = 3,
+                 tp_mult_sl: float = 1.4, tp_mult_atr: float = 1.8,
+                 partial_tp_atr_mult: float = 0.8, partial_sl_offset_atr_mult: float = 0.1,
+                 local_cooldown_duration: int = 14):
+        super().__init__(name="MeanRevert", risk_mult=risk_mult)
+        self.position_open = False
+        self.entry_price = 0.0
+        self.sl_price = 0.0
+        self.tp_price = 0.0
         self.cooldown = 0
-        self.blocks = {}
-        self.last_entry_i = -10**9
-        self.local_cd = 12
+        self.cooldown_duration = local_cooldown_duration # Use configurable cooldown
+        self.last_sl_bar = -100 # To track last SL event
+
+        # New parameters for ETH 30m MR
+        self.gate_pmax_th = gate_pmax_th
+        self.gate_adx_th = gate_adx_th
+        self.gate_atr_pct_th = gate_atr_pct_th
+        self.dist_sma_mult = dist_sma_mult
+        self.signal_z_th = signal_z_th
+        self.signal_rsi_th = signal_rsi_th
+        self.signal_rbody_th = signal_rbody_th
+        self.signal_lower_wick_th = signal_lower_wick_th
+        self.sl_mult_atr = sl_mult_atr
+        self.sl_swing_low_bars = sl_swing_low_bars
+        self.tp_mult_sl = tp_mult_sl
+        self.tp_mult_atr = tp_mult_atr
+        self.partial_tp_atr_mult = partial_tp_atr_mult
+        self.partial_sl_offset_atr_mult = partial_sl_offset_atr_mult
+        self.blocks = {} # Initialize blocks dictionary
 
     def print_summary(self, trades: list):
         print("--- MeanRevert Block Summary ---")
@@ -21,41 +48,41 @@ class MeanRevert(BaseStrategy):
     def signal(self, ctx: Dict[str, Any]) -> Signal | None:
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
-        if lab != "mr" or pmax < 0.40:
-            self.blocks["not_mr"] = self.blocks.get("not_mr", 0) + 1
-            return Signal("flat", 0.0, None, None, reason="not_mr")
-
-        if (ctx["i"] - self.last_entry_i) < self.local_cd:
-            self.blocks["mr_local_cooldown"] = self.blocks.get("mr_local_cooldown", 0) + 1
-            return Signal("flat", 0.0, None, None, reason="mr_local_cooldown")
-
+        
         feats = ctx["feats"]
         df = ctx["df"]
         close = float(df["close"].iat[-1])
         atr_abs = float(feats["atr"].iat[-1])
         sma20 = float(feats["sma20"].iat[-1])
-
-        dist_sma = abs(close - sma20) / atr_abs if atr_abs > 0 else 0
-        if dist_sma < 1.0:
-            self.blocks["too_close_to_sma"] = self.blocks.get("too_close_to_sma", 0) + 1
-            return Signal("flat", 0.0, None, None, reason="too_close_to_sma")
-
+        adx = float(feats["adx"].iat[-1])
         atr_pct = float(feats["atr_pct"].iat[-1])
         atr_p85 = float(ctx["atr_pct_p85"])
-        adx = float(feats["adx"].iat[-1])
-        z = float(feats["z_score_50"].iat[-1])
+        z_score = float(feats["z_score_50"].iat[-1])
         rsi = float(feats["rsi14"].iat[-1])
 
-        if adx >= 16 or atr_pct > atr_p85:
-            self.blocks["filtered"] = self.blocks.get("filtered", 0) + 1
-            return Signal("flat", 0.0, None, None, reason="filtered")
+        # Gate conditions
+        if not (lab == "mr" and pmax >= self.gate_pmax_th and adx < self.gate_adx_th and atr_pct <= atr_p85):
+            return Signal("flat", 0.0, None, None, reason="mr_gate_fail")
+
+        if self.cooldown > 0:
+            self.cooldown -= 1
+            return Signal("flat", 0.0, None, None, reason="cooldown")
+
+        # Estiramiento (Stretch) condition
+        dist_sma = abs(close - sma20) / atr_abs if atr_abs > 0 else 0
+        if dist_sma < self.dist_sma_mult:
+            return Signal("flat", 0.0, None, None, reason="too_close_to_sma")
 
         o, h, l, c = map(float, (df["open"].iat[-1], df["high"].iat[-1], df["low"].iat[-1], df["close"].iat[-1]))
         rng = max(h - l, 1e-9)
-        bull_body = c > o and (c - o) / rng >= 0.45
-        long_wick = (o - l) / rng >= 0.55
-        long_a = (z <= -1.0) and (rsi < 45) and (bull_body or long_wick)
+        rbody_long = (c - o) / rng if rng > 0 and c > o else 0
+        lower_wick_pct = (o - l) / rng if rng > 0 and o > l else 0
 
+        # Signal A: Z-score, RSI, and candle body/wick
+        long_a = (z_score <= self.signal_z_th) and (rsi < self.signal_rsi_th) and \
+                 (rbody_long >= self.signal_rbody_th or lower_wick_pct >= self.signal_lower_wick_th)
+
+        # Signal B: BB re-entry
         mid = feats["sma20"].iat[-1]
         std = feats["std20"].iat[-1]
         bb_low = float(mid - 2.0 * std)
@@ -63,18 +90,24 @@ class MeanRevert(BaseStrategy):
         long_b = (prev_close < bb_low) and (close > bb_low) and (close < sma20)
 
         if long_a or long_b:
-            swing_low = float(df["low"].iloc[-3:-1].min())
-            sl_pts = max(close - swing_low, 1.3 * atr_abs)
+            swing_low_bars = float(df["low"].iloc[-self.sl_swing_low_bars:-1].min())
+            
+            # SL calculation
+            sl_pts = max(close - swing_low_bars, self.sl_mult_atr * atr_abs)
+            
+            # TP calculation
             tp_target_media = abs(close - sma20)
-            tp_raw = min(1.8 * atr_abs, tp_target_media)
-            tp_pts = max(1.4 * sl_pts, tp_raw)
-            partial_tp_pts = 0.8 * atr_abs
-            partial_sl_offset_atr_mult = 0.1 # BE + 0.1*ATR
-            self.cooldown = 2
-            self.last_entry_i = ctx["i"]
-            return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=("z_rsi" if long_a else "bb_reentry"))
+            tp_raw = min(self.tp_mult_atr * atr_abs, tp_target_media)
+            tp_pts = max(self.tp_mult_sl * sl_pts, tp_raw)
+            
+            # Partial TP and SL offset
+            partial_tp_pts = self.partial_tp_atr_mult * atr_abs
+            partial_sl_offset_atr_mult = self.partial_sl_offset_atr_mult
 
-        self.blocks["no_setup"] = self.blocks.get("no_setup", 0) + 1
+            self.cooldown = self.cooldown_duration # Use configurable cooldown
+            # self.last_entry_i = ctx["i"] # This is handled by broker
+            return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=("z_rsi_candle" if long_a else "bb_reentry"))
+
         return Signal("flat", 0.0, None, None, reason="no_setup")
 
     def warmup_bars(self) -> int:

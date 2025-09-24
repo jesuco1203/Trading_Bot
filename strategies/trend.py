@@ -8,41 +8,58 @@ logger = logging.getLogger(__name__)
 
 class Trend(BaseStrategy):
     name = "Trend"
-    ALLOW_SHORTS = False
 
-    def __init__(self, atr_pct_80_percentile: float = 0.06):
-        super().__init__("Trend", risk_mult=1.0)
+    def __init__(self, atr_pct_80_percentile: float, risk_mult: float = 1.0,
+                 arm_rbody_th: float = 0.55, arm_adx_th: float = 20.0, arm_adx_delta_th: float = 0.5,
+                 arm_timeout: int = 10, retest_eps_pct: float = 0.25, reconfirm_mult_1: float = 0.0003,
+                 reconfirm_mult_2: float = 0.0008, sl_mult_atr: float = 2.4, tp_mult_sl: float = 1.8,
+                 tp_mult_atr: float = 3.0, partial_tp_atr_mult: float = 1.2, partial_sl_offset_atr_mult: float = 0.3,
+                 sl_cooldown_duration: int = 3, allow_shorts: bool = True):
+        super().__init__(name="Trend", risk_mult=risk_mult)
+        self.atr_pct_80_percentile = atr_pct_80_percentile
+        self.position_open = False
+        self.entry_price = 0.0
+        self.sl_price = 0.0
+        self.tp_price = 0.0
         self.cooldown = 0
-        self.atr_pct_80 = atr_pct_80_percentile
-        self.armed_level: Optional[tuple[float, str]] = None
+        self.cooldown_duration = sl_cooldown_duration # Use configurable cooldown
+        self.last_sl_bar = -100 # To track last SL event
+
+        self.armed_level = None
         self.armed_bars = 0
         self.retested = False
-        self.arms = 0
+        self.arms = 0 # Initialize arms counter
+
+        # New parameters for BTC 4H Trend
+        self.arm_rbody_th = arm_rbody_th
+        self.arm_adx_th = arm_adx_th
+        self.arm_adx_delta_th = arm_adx_delta_th
+        self.arm_timeout = arm_timeout
+        self.retest_eps_pct = retest_eps_pct
+        self.reconfirm_mult_1 = reconfirm_mult_1
+        self.reconfirm_mult_2 = reconfirm_mult_2
+        self.sl_mult_atr = sl_mult_atr
+        self.tp_mult_sl = tp_mult_sl
+        self.tp_mult_atr = tp_mult_atr
+        self.partial_tp_atr_mult = partial_tp_atr_mult
+        self.partial_sl_offset_atr_mult = partial_sl_offset_atr_mult
+        self.allow_shorts = allow_shorts
 
     def on_stop(self):
-        self.cooldown = 5
+        self.cooldown = self.cooldown_duration
         self.armed_level = None
         self.retested = False
         logging.info(f"STOP-LOSS hit. Cooldown activated for {self.cooldown} bars.")
 
-    def print_summary(self, trades: list):
-        strat_trades = [t for t in trades if t.get("strategy") == self.name]
-        entries = len(set(t['ts'] for t in strat_trades if not t.get("partial")))
-        wins = 0
-        for ts in set(t['ts'] for t in strat_trades):
-            trade_pnl = sum(t["pnl"] for t in strat_trades if t['ts'] == ts)
-            if trade_pnl > 0:
-                wins += 1
-        pnl = sum(t["pnl"] for t in strat_trades)
-        hit_rate = (wins / entries) * 100 if entries > 0 else 0
-        print(f"--- {self.name} Summary ---")
-        print(f"Arms: {self.arms} | Entries: {entries} | Wins: {wins} | Hit Rate: {hit_rate:.2f}% | PnL: {pnl:.2f}")
 
-    def warmup_bars(self) -> int: return 60
+
+    def warmup_bars(self) -> int:
+        return max(60, self.arm_timeout)
 
     def signal(self, ctx: dict) -> Signal:
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
+        
         if lab != "trend" or pmax < 0.40:
             self.armed_level = None
             self.armed_bars = 0
@@ -78,17 +95,22 @@ class Trend(BaseStrategy):
         rbody = max(cl - o, 0.0) / rng if rng > 0 else 0
         prev_high = float(df["high"].iat[-2])
 
+        # Swing low for SL calculation
+        swing_low_9 = float(df["low"].iloc[-9:-1].min())
+
         if self.armed_level is None:
             arm_long = (
                 up and (sep >= sep_min) and (slope_fast > 0) and (slope_slow >= 0) and
-                pullback_long and (cl > prev_high) and (rbody >= 0.55) and 
-                (adx_now >= 20) and ((adx_now - adx_prev) >= 0.5) and (di_plus > di_minus)
+                pullback_long and (cl > prev_high) and 
+                (rbody >= self.arm_rbody_th) and 
+                (adx_now >= self.arm_adx_th) and 
+                ((adx_now - adx_prev) >= self.arm_adx_delta_th) and 
+                (di_plus > di_minus)
             )
             if arm_long:
                 self.armed_level = (prev_high, "long")
                 self.armed_bars = 0
                 self.retested = False
-                self.arms += 1
                 logging.info(f"ARM i={ctx['ts']} bars={self.armed_bars} lvl={self.armed_level[0]:.2f}")
                 return Signal("flat", 0.0, None, None, reason="arm_bpb")
 
@@ -99,16 +121,18 @@ class Trend(BaseStrategy):
             if self.armed_bars < 1:
                 return Signal("flat", 0.0, None, None, reason="armed_wait_min1")
 
-            if self.armed_bars > 12:
+            if self.armed_bars > self.arm_timeout: # Use configurable timeout
                 self.armed_level = None; self.armed_bars = 0; self.retested = False
                 return Signal("flat", 0.0, None, None, reason="disarm_long_timeout")
 
-            eps = 0.0025
-            touched = (l <= level * (1.0 + eps)) or (l <= ma_fast.iat[-1] * (1.0 + eps))
+            # Retest condition
+            eps_retest = self.retest_eps_pct / 100
+            touched = (l <= level * (1.0 + eps_retest)) or (l <= ma_fast.iat[-1] * (1.0 + eps_retest))
             if touched and close > level and close > ma_fast.iat[-1]:
                 self.retested = True
 
-            reconf = (close > level * (1.0 + 0.0003)) or (h > prev_high * (1.0 + 0.0008))
+            # Reconfirm condition
+            reconf = (close > level * (1.0 + self.reconfirm_mult_1)) or (h > prev_high * (1.0 + self.reconfirm_mult_2))
 
             lose_struct = not (sep >= 0.8 * sep_min and slope_fast > 0 and slope_slow >= 0)
             if lose_struct:
@@ -116,12 +140,22 @@ class Trend(BaseStrategy):
                 return Signal("flat", 0.0, None, None, reason="disarm_long_losestruct")
 
             if self.retested and reconf:
-                swing_low = float(df["low"].iloc[-7:-1].min())
-                sl_pts = max(close - swing_low, 2.2 * atr_abs)
-                tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
-                partial_tp_pts = 1.0 * atr_abs
+                # SHORTS OFF check
+                if not self.allow_shorts and side == "short":
+                    return Signal("flat", 0.0, None, None, reason="shorts_off")
+
+                # SL calculation
+                sl_pts = max(close - swing_low_9, self.sl_mult_atr * atr_abs)
+                
+                # TP calculation
+                tp_pts = max(self.tp_mult_sl * sl_pts, self.tp_mult_atr * atr_abs)
+                
+                # Partial TP and SL offset
+                partial_tp_pts = self.partial_tp_atr_mult * atr_abs
+                partial_sl_offset_atr_mult = self.partial_sl_offset_atr_mult
+
                 self.armed_level = None; self.armed_bars = 0; self.retested = False
-                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, 0.3, reason=f"retest_and_reconf")
+                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=f"retest_and_reconf")
 
             return Signal("flat", 0.0, None, None, reason="armed_wait")
 

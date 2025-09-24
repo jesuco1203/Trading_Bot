@@ -31,7 +31,7 @@ def main(config_path: str, limit_bars: int):
         return
 
     # 3. Load Data
-    symbol = config['run']['symbols'][0]
+    symbol = config['market']['symbols'][0]
     base_tf = config['market']['timeframes'][0]
     
     df_base = get_ohlcv(symbol, base_tf, limit=limit_bars, root=config['data']['root'])
@@ -64,22 +64,58 @@ def main(config_path: str, limit_bars: int):
 
     # 2. Initialize Components
     all_strategies = {
-        "Trend": Trend(atr_pct_80_percentile=atr_pct_85_percentile),
-        "MeanRevert": MeanRevert(),
+        "Trend": Trend(
+            atr_pct_80_percentile=atr_pct_85_percentile,
+            risk_mult=config['strategy_params']['Trend_risk_mult'],
+            arm_rbody_th=config['strategy_params']['Trend_arm_rbody_th'],
+            arm_adx_th=config['strategy_params']['Trend_arm_adx_th'],
+            arm_adx_delta_th=config['strategy_params']['Trend_arm_adx_delta_th'],
+            arm_timeout=config['strategy_params']['Trend_arm_timeout'],
+            retest_eps_pct=config['strategy_params']['Trend_retest_eps_pct'],
+            reconfirm_mult_1=config['strategy_params']['Trend_reconfirm_mult_1'],
+            reconfirm_mult_2=config['strategy_params']['Trend_reconfirm_mult_2'],
+            sl_mult_atr=config['strategy_params']['Trend_sl_mult_atr'],
+            tp_mult_sl=config['strategy_params']['Trend_tp_mult_sl'],
+            tp_mult_atr=config['strategy_params']['Trend_tp_mult_atr'],
+            partial_tp_atr_mult=config['strategy_params']['Trend_partial_tp_atr_mult'],
+            partial_sl_offset_atr_mult=config['strategy_params']['Trend_partial_sl_offset_atr_mult'],
+            sl_cooldown_duration=config['strategy_params']['Trend_sl_cooldown_duration'],
+            allow_shorts=config['strategy_params']['Trend_allow_shorts']
+        ),
+        "MeanRevert": MeanRevert(
+            risk_mult=config['strategy_params']['MeanRevert_risk_mult'],
+            gate_pmax_th=config['strategy_params']['MeanRevert_gate_pmax_th'],
+            gate_adx_th=config['strategy_params']['MeanRevert_gate_adx_th'],
+            gate_atr_pct_th=config['strategy_params']['MeanRevert_gate_atr_pct_th'],
+            dist_sma_mult=config['strategy_params']['MeanRevert_dist_sma_mult'],
+            signal_z_th=config['strategy_params']['MeanRevert_signal_z_th'],
+            signal_rsi_th=config['strategy_params']['MeanRevert_signal_rsi_th'],
+            signal_rbody_th=config['strategy_params']['MeanRevert_signal_rbody_th'],
+            signal_lower_wick_th=config['strategy_params']['MeanRevert_signal_lower_wick_th'],
+            sl_mult_atr=config['strategy_params']['MeanRevert_sl_mult_atr'],
+            sl_swing_low_bars=config['strategy_params']['MeanRevert_sl_swing_low_bars'],
+            tp_mult_sl=config['strategy_params']['MeanRevert_tp_mult_sl'],
+            tp_mult_atr=config['strategy_params']['MeanRevert_tp_mult_atr'],
+            partial_tp_atr_mult=config['strategy_params']['MeanRevert_partial_tp_atr_mult'],
+            partial_sl_offset_atr_mult=config['strategy_params']['MeanRevert_partial_sl_offset_atr_mult'],
+            local_cooldown_duration=config['strategy_params']['MeanRevert_local_cooldown_duration']
+        ),
         "VolBreakout": VolBreakout()
     }
-    strategy_mapping = {
-        "trend": ["Trend"],
-        "mr": ["MeanRevert"],
-        "high_vol": []
-    }
+    strategy_mapping = config['strategy_mapping']
     broker = PaperBroker(
         initial_capital=config['risk']['starting_equity'],
         comm_rate=config['costs']['commission_rate'],
         slippage_min=config['costs']['slippage_min'],
         all_strategies=all_strategies
     )
-    regime_selector = RegimeSelector(hmm_model, strategy_mapping)
+    regime_selector = RegimeSelector(
+        hmm_model,
+        strategy_mapping,
+        enter_th=config['selector']['enter_th'],
+        exit_th=config['selector']['exit_th'],
+        persistence=config['selector']['persistence']
+    )
     metrics = RollingMetrics()
     
     # 5. Backtesting Loop

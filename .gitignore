@@ -1,15 +1,5 @@
-# Archivo de configuración con credenciales
-config.json
-
-# Entorno virtual de Python
 venv/
-
-# Archivos de caché de Python
-*.pyc
 __pycache__/
-
-# Archivos del sistema operativo
+*.pyc
 .DS_Store
-
-# Archivos de log
 *.log

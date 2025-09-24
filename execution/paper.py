@@ -75,7 +75,7 @@ class PaperBroker:
                 pnl = (fill_price - self.pos.entry) * self.pos.side * half
                 fee = (abs(half) * fill_price) * self.comm
                 self.capital += pnl - fee
-                self.trades.append({"ts": ts, "pnl": pnl - fee, "partial": True, "side": self.pos.side, "strategy": self.pos.strategy_name})
+                self.trades.append({"ts": ts, "pnl": pnl - fee, "partial": True, "side": self.pos.side, "strategy": self.pos.strategy_name, "exit_reason": "Partial TP", "exit_price": fill_price})
                 self.pos.qty -= half
                 self.pos.partial_done = True
                 # Move SL to BE or BE + offset
@@ -103,7 +103,8 @@ class PaperBroker:
             pnl = (exit_px - self.pos.entry) * self.pos.side * self.pos.qty
             fee = (abs(self.pos.qty) * exit_px) * self.comm
             self.capital += pnl - fee
-            self.trades.append({"ts": ts, "pnl": pnl - fee, "partial": False, "side": self.pos.side, "strategy": self.pos.strategy_name})
+            exit_reason = "sl" if hit_sl and not hit_tp else "tp"
+            self.trades.append({"ts": ts, "pnl": pnl - fee, "partial": False, "side": self.pos.side, "strategy": self.pos.strategy_name, "exit_reason": exit_reason})
             
             if hit_sl and self.pos.strategy_name:
                 strat = self._strategies.get(self.pos.strategy_name)

@@ -29,19 +29,32 @@ class BaseStrategy:
 
     def print_summary(self, trades: list):
         strat_trades = [t for t in trades if t.get("strategy") == self.name]
-        # An entry is a sequence of trades (partial + final) starting at the same timestamp.
-        # For simplicity, we count unique timestamps of non-partial trades.
-        entry_timestamps = {t['ts'] for t in strat_trades if not t.get("partial")}
-        entries = len(entry_timestamps)
         
-        # A win is when the sum of pnl for a given entry is positive.
-        wins = 0
-        for ts in entry_timestamps:
-            trade_pnl = sum(t["pnl"] for t in strat_trades if t['ts'] == ts)
-            if trade_pnl > 0:
-                wins += 1
+        grouped_trades = {}
+        for trade in strat_trades:
+            ts = trade['ts']
+            if ts not in grouped_trades:
+                grouped_trades[ts] = []
+            grouped_trades[ts].append(trade)
 
-        pnl = sum(t["pnl"] for t in strat_trades)
-        hit_rate = (wins / entries) * 100 if entries > 0 else 0
+        entries = len(grouped_trades)
+        wins = 0
+        total_strat_pnl = 0.0
+        for ts, trade_group in grouped_trades.items():
+            total_pnl_for_entry = sum(ev["pnl"] for ev in trade_group)
+            if total_pnl_for_entry > 0:
+                wins += 1
+            total_strat_pnl += total_pnl_for_entry
+
+        pnl = total_strat_pnl
+        hit_rate = (wins / entries) * 100 if entries > 0 else 0.0
+        
+        rr_ratios = []
+        for trade in strat_trades:
+            # Ensure sl_pts and tp_pts exist and sl_pts is not zero to avoid division by zero
+            if trade.get('sl_pts') is not None and trade.get('tp_pts') is not None and trade['sl_pts'] > 0:
+                rr_ratios.append(trade['tp_pts'] / trade['sl_pts'])
+        rr_avg = sum(rr_ratios) / len(rr_ratios) if rr_ratios else 0.0
+
         print(f"--- {self.name} Summary ---")
-        print(f"Entries: {entries} | Wins: {wins} | Hit Rate: {hit_rate:.2f}% | PnL: {pnl:.2f}")
+        print(f"Entries: {entries} | Wins: {wins} | Hit Rate: {hit_rate:.2f}% | PnL: {pnl:.2f} | RR Avg: {rr_avg:.2f}")

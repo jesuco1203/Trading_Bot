@@ -154,15 +154,25 @@ class Trend(BaseStrategy):
                 return Signal("flat", 0.0, None, None, reason="disarm_long_timeout")
 
             # Retest condition
-            eps_retest = self.retest_eps_pct / 100
-            touched = (l <= level * (1.0 + eps_retest)) or (l <= ma_fast.iat[-1] * (1.0 + eps_retest))
-            logging.debug(f"RETEST_DEBUG i={ctx['i']} touched={touched} l={l:.2f} level={level:.2f} eps={eps_retest:.4f} ma_fast={ma_fast.iat[-1]:.2f} close={close:.2f}")
+            RETEST_EPS = 0.0025    # 0.25%
+            touched = (l <= level*(1 + (-RETEST_EPS)) <= h) or (abs(l - level)/level <= RETEST_EPS)
+            logging.debug(f"RETEST_DEBUG i={ctx['i']} touched={touched} l={l:.2f} level={level:.2f} eps={RETEST_EPS:.4f} ma_fast={ma_fast.iat[-1]:.2f} close={close:.2f}")
             if touched and close > level and close > ma_fast.iat[-1]:
                 self.retested = True
+            
+            TIMEOUT_BARS = 16
+            if self.armed_bars > TIMEOUT_BARS and not touched:
+                self.armed_level = None; self.armed_bars = 0; self.retested = False
+                return Signal("flat", 0.0, None, None, reason="retest_timeout")
 
             # Reconfirm condition
-            reconf = (close > level * (1.0 + self.reconfirm_mult_1)) or (h > prev_high * (1.0 + self.reconfirm_mult_2))
-            logging.debug(f"RECONF_DEBUG i={ctx['i']} reconf={reconf} close={close:.2f} level={level:.2f} reconf1={self.reconfirm_mult_1:.4f} h={h:.2f} prev_high={prev_high:.2f} reconf2={self.reconfirm_mult_2:.4f}")
+            RECONF_CLOSE_BPS = 30   # 0.30% por cierre
+            RECONF_HIGH_BPS  = 8    # 0.08% por ruptura de máximo previo
+
+            reconf_close = close > level * (1 + RECONF_CLOSE_BPS/10000.0)
+            reconf_high  = h  > prev_high * (1 + RECONF_HIGH_BPS/10000.0)
+            reconf = reconf_close or reconf_high
+            logging.debug(f"RECONF_DEBUG i={ctx['i']} reconf={reconf} close={close:.2f} level={level:.2f} reconf_close={reconf_close} h={h:.2f} prev_high={prev_high:.2f} reconf_high={reconf_high}")
 
             lose_struct = not (sep >= 0.8 * self.sep_min and slope_fast > 0 and slope_slow >= 0)
             if lose_struct:
@@ -175,20 +185,20 @@ class Trend(BaseStrategy):
                     return Signal("flat", 0.0, None, None, reason="shorts_off")
 
                 # SL calculation
-                swing_low = float(df["low"].iloc[-7:-1].min())
-                sl_pts = max(close - swing_low, 2.0 * atr_abs)
+                swing_low = float(df["low"].iloc[-9:-1].min())
+                sl_pts = max(close - swing_low, 2.4 * atr_abs)
                 
                 # TP calculation
-                tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
+                tp_pts = max(1.8 * sl_pts, 3.0 * atr_abs)    # RR sano
                 
                 # Partial TP and SL offset
-                partial_tp_pts = 1.0 * atr_abs
-                partial_sl_offset_atr_mult = 0.3
+                partial_tp_pts = 1.2 * atr_abs             # parcial 4H un poco más lejos
+                partial_sl_offset_atr_mult = 0.3         # SL a BE+0.3*ATR tras parcial
 
                 self.armed_level = None; self.armed_bars = 0; self.retested = False
                 rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
-                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=f"retest_and_reconf", rr=rr)
+                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=f"reconf_ok", rr=rr)
 
-            return Signal("flat", 0.0, None, None, reason="armed_wait")
+            return Signal("flat", 0.0, None, None, reason="waiting_reconf")
 
         return Signal("flat", 0.0, None, None, reason="no_setup")

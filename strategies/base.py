@@ -34,12 +34,7 @@ class BaseStrategy:
     def print_summary(self, trades: list):
         strat_trades = [t for t in trades if t.get("strategy") == self.name]
         if not strat_trades:
-            return 0.0, 0.0, 0, 0, 0.0
-
-    def print_summary(self, trades: list):
-        strat_trades = [t for t in trades if t.get("strategy") == self.name]
-        if not strat_trades:
-            return 0.0, 0.0, 0, 0, 0.0
+            return 0.0, 0.0, 0, 0, 0.0, 0, 0.0, 0.0
 
         # agrupar por operación (entrada)
         ops = {}
@@ -48,6 +43,8 @@ class BaseStrategy:
             ops.setdefault(key, []).append(t)
 
         entries = 0; wins = 0; total_pnl = 0.0; rrs = []
+        bars_open_list = []; mfe_atr_list = []; mae_atr_list = []
+
         for key, evs in ops.items():
             evs.sort(key=lambda x: x.get("ts", 0))
             entries += 1
@@ -66,6 +63,15 @@ class BaseStrategy:
             if is_win:
                 wins += 1
 
+            if close_ev:
+                bars_open_list.append(close_ev.get("bars_open", 0))
+                mfe_atr_list.append(close_ev.get("mfe_atr", 0.0))
+                mae_atr_list.append(close_ev.get("mae_atr", 0.0))
+
         rr_avg = (sum(rrs) / len(rrs)) if rrs else 0.0
         hit_rate = (wins / entries) * 100 if entries else 0.0
-        return total_pnl, rr_avg, entries, wins, hit_rate
+        avg_bars_open = (sum(bars_open_list) / len(bars_open_list)) if bars_open_list else 0
+        mfe_atr_avg = (sum(mfe_atr_list) / len(mfe_atr_list)) if mfe_atr_list else 0.0
+        mae_atr_avg = (sum(mae_atr_list) / len(mae_atr_list)) if mae_atr_list else 0.0
+
+        return total_pnl, rr_avg, entries, wins, hit_rate, avg_bars_open, mfe_atr_avg, mae_atr_avg

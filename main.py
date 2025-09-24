@@ -149,6 +149,15 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         pnl_bar = broker.mark_to_market(float(row["close"]), ts=current_dt, high=float(row["high"]), low=float(row["low"]))
         equity += pnl_bar
         metrics.update(current_dt, equity, broker.exposure())
+
+        # Session Kill Switches
+        if metrics.drawdown_pct() <= config['risk'].get('max_dd_pct_session', -0.04):   # ej. -4%
+            logging.warning("KILL_SWITCH: session DD limit reached")
+            break
+        if metrics.consecutive_losses() >= config['risk'].get('max_consecutive_losses', 3):  # ej. 3
+            logging.warning("KILL_SWITCH: too many consecutive losses")
+            break
+
         if prev_exposure != 0 and broker.exposure() == 0:
             last_exit_i = i
 
@@ -179,7 +188,8 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
                 "i": i, "ts": current_dt, "df": df_base.iloc[:i+1], "feats": feats_base.iloc[:i+1],
                 "equity": equity, "score_multiTF": float(row.get("score_multiTF", 0.0)),
                 "atr_pct_p85": atr_pct_85_percentile, "atr_pct_70": atr_pct_70_percentile,
-                "regime_label": lab, "pmax": pmax
+                "regime_label": lab, "pmax": pmax,
+                "atr_pct_p90": atr_pct_85_percentile # Add atr_pct_p90 to context
             }
             sig = s.signal(context)
             if sig and sig.side != "flat":
@@ -194,7 +204,7 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         strat = all_strategies[strat_name]
         base_risk = config['risk']['risk_per_trade_pct']
         adj_risk = base_risk * strat.risk_mult * (0.5 + 0.5*pmax_used) * (0.5 + 0.5*sig.strength)
-        qty = atr_position_size(equity=equity, atr=atr_t, risk_pct=adj_risk, tick_value=tick_value)
+        qty = atr_position_size(equity=equity, sl_pts=sig.sl_pts, risk_pct=adj_risk, tick_value=tick_value)
         
         if qty > 0:
             price = float(row["close"])
@@ -214,22 +224,24 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
             rr = sig.tp_pts / sig.sl_pts if sig.sl_pts > 0 else 0
             logging.info(f"ENTER i={i} strat={strat_name} rr={rr:.2f} sl={sig.sl_pts:.1f} tp={sig.tp_pts:.1f} reason={sig.reason}")
 
-    trend_pnl, trend_rr_avg, trend_entries, trend_wins, trend_hit_rate = (0.0, 0.0, 0, 0, 0.0)
+    trend_pnl, trend_rr_avg, trend_entries, trend_wins, trend_hit_rate, trend_avg_bars_open, trend_mfe_atr_avg, trend_mae_atr_avg = (0.0, 0.0, 0, 0, 0.0, 0, 0.0, 0.0)
     if "Trend" in all_strategies:
-        trend_pnl, trend_rr_avg, trend_entries, trend_wins, trend_hit_rate = all_strategies["Trend"].print_summary(broker.trades)
+        trend_pnl, trend_rr_avg, trend_entries, trend_wins, trend_hit_rate, trend_avg_bars_open, trend_mfe_atr_avg, trend_mae_atr_avg = all_strategies["Trend"].print_summary(broker.trades)
         logging.info(f"--- {all_strategies['Trend'].name} Summary ---")
         logging.info(f"Entries: {trend_entries} | Wins(TP): {trend_wins} | Hit: {trend_hit_rate:.0f}% | RR Avg: {trend_rr_avg:.2f} | PnL: {trend_pnl:.2f}")
+        logging.info(f"Avg Bars Open: {trend_avg_bars_open:.0f} | MFE ATR Avg: {trend_mfe_atr_avg:.2f} | MAE ATR Avg: {trend_mae_atr_avg:.2f}")
 
-    mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate = (0.0, 0.0, 0, 0, 0.0)
+    mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate, mr_avg_bars_open, mr_mfe_atr_avg, mr_mae_atr_avg = (0.0, 0.0, 0, 0, 0.0, 0, 0.0, 0.0)
     mr_block_summary = {}
     if "MeanRevert" in all_strategies:
         summary_result = all_strategies["MeanRevert"].print_summary(broker.trades)
         if summary_result is None:
             logging.error(f"MeanRevert.print_summary returned None!")
         else:
-            mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate = summary_result
+            mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate, mr_avg_bars_open, mr_mfe_atr_avg, mr_mae_atr_avg = summary_result
             logging.info(f"--- {all_strategies['MeanRevert'].name} Summary ---")
             logging.info(f"Entries: {mr_entries} | Wins(TP): {mr_wins} | Hit: {mr_hit_rate:.0f}% | RR Avg: {mr_rr_avg:.2f} | PnL: {mr_pnl:.2f}")
+            logging.info(f"Avg Bars Open: {mr_avg_bars_open:.0f} | MFE ATR Avg: {mr_mfe_atr_avg:.2f} | MAE ATR Avg: {mr_mae_atr_avg:.2f}")
             mr_block_summary = all_strategies["MeanRevert"].blocks
     broker.print_summary()
     broker.export_trades_to_csv(filename=f"trades_{symbol}_{base_tf}_{window_name.replace(' ', '_')}.csv") # Export trades
@@ -247,10 +259,16 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         "mr_pnl": mr_pnl,
         "trend_rr_avg": trend_rr_avg,
         "mr_rr_avg": mr_rr_avg,
+        "trend_avg_bars_open": trend_avg_bars_open,
+        "trend_mfe_atr_avg": trend_mfe_atr_avg,
+        "trend_mae_atr_avg": trend_mae_atr_avg,
+        "mr_avg_bars_open": mr_avg_bars_open,
+        "mr_mfe_atr_avg": mr_mfe_atr_avg,
+        "mr_mae_atr_avg": mr_mae_atr_avg,
         "mr_block_summary": mr_block_summary
     }
 
-def main(config_path: str, limit_bars: int):
+def main(config_path: str, limit_bars: int, start_index: int = 0):
     """
     Main function to run the backtesting pipeline.
     """
@@ -266,7 +284,7 @@ def main(config_path: str, limit_bars: int):
     symbol = config['market']['symbols'][0]
     base_tf = config['market']['timeframes'][0]
     
-    df_full = get_ohlcv(symbol, base_tf, limit=limit_bars, root=config['data']['root'])
+    df_full = get_ohlcv(symbol, base_tf, limit=limit_bars + start_index, root=config['data']['root'])
     if df_full.empty:
         logging.error("No data loaded. Exiting.")
         return
@@ -275,22 +293,23 @@ def main(config_path: str, limit_bars: int):
     feats_full = df_full.copy()
 
     # Define walk-forward windows
-    window_size = 2000 # Example window size
+    window_size = limit_bars # Use limit_bars as window_size
     window_shift = 500 # Example window shift
     total_bars = len(df_full)
 
     results = []
     window_num = 0
-    for start_idx in range(0, total_bars, window_shift):
-        end_idx = start_idx + window_size
+    # Adjust the range to start from start_index
+    for current_start_idx in range(start_index, total_bars, window_shift):
+        end_idx = current_start_idx + window_size
         if end_idx > total_bars:
             break
         
         window_num += 1
-        df_window = df_full.iloc[start_idx:end_idx].copy()
+        df_window = df_full.iloc[current_start_idx:end_idx].copy()
         
         # Run backtest for the current window
-        window_results = run_single_backtest(config, df_window, symbol, base_tf, f"Window {window_num} ({start_idx}-{end_idx})")
+        window_results = run_single_backtest(config, df_window, symbol, base_tf, f"Window {window_num} ({current_start_idx}-{end_idx})")
         results.append(window_results)
 
     # Report aggregated results
@@ -299,6 +318,8 @@ def main(config_path: str, limit_bars: int):
         logging.info(f"Window {i+1}: Net PnL={res['net_pnl']:.2f}, Total Trades={res['total_trades']}, Hit Rate={res['hit_rate']:.2%}")
         logging.info(f"  Trend PnL={res['trend_pnl']:.2f}, MR PnL={res['mr_pnl']:.2f}")
         logging.info(f"  Trend RR Avg={res['trend_rr_avg']:.2f}, MR RR Avg={res['mr_rr_avg']:.2f}")
+        logging.info(f"  Trend Avg Bars Open={res['trend_avg_bars_open']:.0f}, MFE ATR Avg={res['trend_mfe_atr_avg']:.2f}, MAE ATR Avg={res['trend_mae_atr_avg']:.2f}")
+        logging.info(f"  MR Avg Bars Open={res['mr_avg_bars_open']:.0f}, MFE ATR Avg={res['mr_mfe_atr_avg']:.2f}, MAE ATR Avg={res['mr_mae_atr_avg']:.2f}")
         if res['mr_block_summary']:
             logging.info("  MR Block Summary:")
             for reason, count in res['mr_block_summary'].items():
@@ -308,6 +329,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI-Driven Trading Bot Backtester")
     parser.add_argument("--limit-bars", type=int, default=2000, help="Number of historical bars to load")
     parser.add_argument("--config", type=str, required=True, help="Path to the configuration file (TOML)")
+    parser.add_argument("--start-index", type=int, default=0, help="Start index for loading historical bars (for walk-forward)")
     args = parser.parse_args()
 
-    main(config_path=args.config, limit_bars=args.limit_bars)
+    main(config_path=args.config, limit_bars=args.limit_bars, start_index=args.start_index)

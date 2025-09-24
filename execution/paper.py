@@ -115,15 +115,21 @@ class PaperBroker:
             self.pos.mae_atr = max(self.pos.mae_atr, mae_atr_units)
 
         # Time-stop logic
-        if self.pos.time_stop_bars > 0 and self.pos.bars_open >= self.pos.time_stop_bars and self.pos.mfe_atr < self.pos.time_stop_mfe_atr:
-            exit_px = price # or close
-            pnl = (exit_px - self.pos.entry) * self.pos.side * self.pos.qty
-            fee = (abs(self.pos.qty) * exit_px) * self.comm # Recalculate fee for time-stop exit
-            self.capital += pnl - fee
-            self.trades.append({"trade_id": self.pos.trade_id, "ts": ts, "pnl": pnl - fee, "partial": False, "side": self.pos.side, "strategy": self.pos.strategy_name, "exit_reason": "time_stop", "sl_pts": self.pos.sl, "tp_pts": self.pos.tp, "rr": self.pos.rr})
+        if self.pos.bars_open >= 6 and self.pos.mfe_atr < 0.6:  # 6 velas sin alza ≥0.6*ATR
+            exit_px = price
+            # Calculate fee for time-stop exit
+            fee = (abs(self.pos.qty) * exit_px) * self.comm
+            pnl = (exit_px - self.pos.entry) * self.pos.side * self.pos.qty - fee
+            self.capital += pnl
+            self.trades.append({"ts": ts, "trade_id": self.pos.trade_id, "entry_ts": self.pos.entry_ts,
+                                "strategy": self.pos.strategy_name, "partial": False,
+                                "pnl": pnl, "exit_reason": "time_stop", "event": "close"})
+            logging.info(f"EXIT reason=time_stop bars_open={self.pos.bars_open} mfe_atr={self.pos.mfe_atr:.2f}")
             self.pos = Position()
             self.exits_count += 1
             return pnl
+
+
 
         if self.pos.partial_tp is not None and not self.pos.partial_done:
             hit_partial = (self.pos.side > 0 and high >= self.pos.partial_tp) or (self.pos.side < 0 and low <= self.pos.partial_tp)

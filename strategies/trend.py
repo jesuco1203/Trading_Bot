@@ -92,6 +92,11 @@ class Trend(BaseStrategy):
         if atr_abs <= 0:
             return Signal("flat", 0.0, None, None, reason="low_atr")
 
+        atr_pct = (atr_abs / close) if close > 0 else 0.0
+        atr_p90 = ctx["atr_pct_p90"]
+        if atr_pct > atr_p90:
+            return Signal("flat", 0.0, None, None, reason="atr_vol_too_high")
+
         ma_fast = df["close"].rolling(window=self.ma_fast_len, min_periods=self.ma_fast_len).mean()
         ma_slow = df["close"].rolling(window=self.ma_slow_len, min_periods=self.ma_slow_len).mean()
 

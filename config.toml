@@ -1,0 +1,27 @@
+[market]
+symbols    = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "ATOM-USDT-SWAP"]
+timeframes = ["30m", "1h", "2h", "4h"]
+tick_value = 1.0
+
+[data]
+root = "data/okx"
+backfill_months = 12
+exchange = "okx"
+
+[risk]
+starting_equity      = 10000
+risk_per_trade_pct = 0.002
+max_daily_loss_pct   = 0.03
+
+[costs]
+commission_rate = 0.0005
+slippage_min    = 0.5
+spread_bias     = 0.0
+
+[hmm]
+n_states       = 3
+retrain_every  = 1000
+
+[run]
+limit_bars = 0
+symbols    = ["BTC-USDT-SWAP"]

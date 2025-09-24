@@ -1,0 +1,7 @@
+ccxt
+pandas
+pandas-ta
+numpy
+toml
+hmmlearn
+scikit-learn

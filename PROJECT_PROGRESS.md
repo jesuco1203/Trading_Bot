@@ -1,11 +1,12 @@
 # Project Progress Summary: AI-Driven Trading Bot
 
-This document summarizes the progress made on the AI-driven trading bot project, highlighting key implementations, challenges, and the current blocking issue.
+This document summarizes the progress made on the AI-driven trading bot project, highlighting key implementations and the current development roadmap.
 
 ## Project Goal
 The primary goal is to enhance the existing OKX trading bot by incorporating Artificial Intelligence (AI) to dynamically select trading strategies based on market cycles, aiming to maximize risk-adjusted returns.
 
 ## Implemented Features (Hito 1 - Initial Setup)
+(This section remains largely as is, covering the foundational setup)
 
 ### 1. Project Structure & Configuration
 -   **Directory Structure:** Created modular directories (`data`, `features`, `regime`, `strategies`, `selector`, `risk`, `execution`, `monitoring`, `scripts`).
@@ -24,8 +25,8 @@ The primary goal is to enhance the existing OKX trading bot by incorporating Art
     -   Includes warm-start for retraining.
     -   `covariance_type` set to `"diag"` for stability.
 -   **RegimeSelector (`selector/regime_switch.py`):** Selects active strategies based on HMM probabilities.
-    -   Filters out signals with low confidence (`pmax < 0.45`).
-    -   Currently configured to only activate strategies if the regime is "trend" (for testing purposes).
+    -   Now supports configurable `enter_th`, `exit_th`, and `persistence`.
+    -   Improved logging to differentiate reasons for strategy inactivity (e.g., `mapping_empty` instead of generic `no_mapping_for_*`).
 
 ### 4. Trading Strategy (`strategies/trend.py`)
 -   **Trend Strategy:** Implemented a refined MA-cross strategy.
@@ -49,19 +50,77 @@ The primary goal is to enhance the existing OKX trading bot by incorporating Art
 -   Passes relevant context to strategies.
 -   Implements dynamic risk adjustment based on HMM confidence and signal strength.
 
-## Current Status & Blocking Issue
+---
 
-The project has made significant progress, with the end-to-end backtesting pipeline largely implemented. The HMM is now learning distinct states, and the `Trend` strategy has been refined with more robust entry conditions.
+## Recent Implementations & Refinements
 
-**However, a critical blocking issue persists:**
+This section details the significant enhancements and refactorings implemented since the initial setup.
 
--   **Inability to Read/Modify `main.py`:** I am currently encountering a persistent technical issue that prevents me from reliably reading or modifying the `main.py` file. Despite multiple attempts using different tools (`read_file`, `replace`, `read_many_files`), I am unable to access its content or perform the requested modifications. This has led to a loop where I cannot apply necessary changes to `main.py` to continue debugging and refining the bot.
+### 1. Dynamic Configuration Profiles
+-   **Dedicated Configs:** Introduced separate TOML configuration files (`configs/btc_30m.toml`, `configs/eth_30m.toml`, `configs/btc_4h.toml`) for different trading pairs and timeframes.
+-   **Parameterization:** `main.py` now dynamically loads all strategy and selector parameters from these TOML files, allowing for flexible tuning without code changes.
+-   **Trend Enable Flag:** Added `ETH30m_enable_trend` flag in `configs/eth_30m.toml` to conditionally enable/disable the Trend strategy for ETH 30m directly from config.
 
-This limitation prevents further progress on implementing the dynamic `adj_risk` calculation and other necessary changes in `main.py`.
+### 2. Enhanced Strategy Logic & Control
+-   **BaseStrategy Metrics:** `strategies/base.py` `print_summary` method now accurately calculates and displays `RR Avg` (Risk-Reward Ratio) for each strategy based on entry parameters.
+-   **Trend Strategy (`strategies/trend.py`):**
+    -   **Configurable ARM:** Parameters for `rbody`, `ADX` thresholds, and `arm_timeout` are now configurable.
+    -   **Dynamic SL/TP:** SL (`sl_mult_atr`) and TP (`tp_mult_sl`, `tp_mult_atr`) calculations are now configurable.
+    -   **Partial Exits & Trailing:** `partial_tp_atr_mult` and `partial_sl_offset_atr_mult` are configurable.
+    -   **New Trailing Stop:** Implemented configurable `trail_trigger_atr_mult` and `trail_sl_offset_atr_mult` for dynamic trailing stop adjustments.
+    -   **Entry Filters:** Added `min_pmax` and `max_dist_ma20_atr` guards to filter fragile entries.
+    -   **Time-Stop:** Implemented `time_stop_bars` and `time_stop_mfe_atr` to exit trades that do not progress within a set time/MFE.
+    -   **Shorts Control:** `allow_shorts` parameter added for explicit control over short entries.
+-   **MeanRevert Strategy (`strategies/mean_revert.py`):**
+    -   **Configurable Gates:** Parameters for `pmax`, `ADX` (`gate_adx_max`), `ATR%`, and `dist_sma` are now configurable.
+    -   **Detailed Block Telemetry:** `print_summary` now provides a detailed breakdown of reasons for strategy inactivity (e.g., `gate_not_mr`, `gate_pmax_low`, `gate_adx_high`, `gate_atr_high`, `too_close_to_sma`, `cooldown`, `no_setup`) with percentage rates.
 
-## Next Steps (Pending Resolution of Blocking Issue)
+### 3. Improved PaperBroker & Trade Telemetry
+-   **Position Dataclass:** Extended `Position` to track `rr`, `bars_open`, `mfe_atr`, `mae_atr`, `symbol`, and `tf` per trade.
+-   **Trade Recording:** `enter_or_flip` and `mark_to_market` methods now correctly capture and store these new metrics in the `trades` list.
+-   **CSV Export:** Added `export_trades_to_csv` method to `PaperBroker` for detailed trade analysis, including all captured metrics.
 
-Once the `main.py` file becomes accessible and modifiable, the immediate next steps would be to:
-1.  **Implement dynamic `adj_risk` calculation in `main.py`:** This was the last pending change from the consultant's previous instructions.
-2.  **Run validation:** Execute `main.py` with the specified configuration (BTC 30m, --limit-bars 2000) to evaluate the impact of all recent changes.
-3.  **Continue refinement:** Based on the validation results, further refine strategy parameters, HMM configuration, and explore additional strategies as per the consultant's roadmap.
+---
+
+## Current Profile Status & Validation Results
+
+This section summarizes the performance and configuration status of each trading profile based on recent backtests.
+
+-   **BTC 30m (Combined Baseline):**
+    -   **Status:** Profitable.
+    -   **Net PnL:** +4.87 (from initial baseline).
+    -   **Configuration:** Uses a combination of Trend and MeanRevert strategies with optimized parameters.
+-   **ETH 30m (MR-only):**
+    -   **Status:** Profitable.
+    -   **Net PnL:** +4.15 (after recent tuning).
+    -   **Configuration:** Currently runs MeanRevert strategy only (`Trend` temporarily disabled via `strategy_mapping` and `ETH30m_enable_trend` flag). MeanRevert parameters are tuned for ETH 30m.
+    -   **Key Insight:** `gate_adx_high` is the dominant reason for MeanRevert not generating signals (approx. 73% of blocks).
+-   **BTC 4H (Trend-only):**
+    -   **Status:** Profitable.
+    -   **Net PnL:** +10.48.
+    -   **Configuration:** Runs Trend strategy only (`MeanRevert` disabled). Trend parameters are robustly tuned for 4H timeframe.
+
+---
+
+## Pending Tasks & Next Steps
+
+This section outlines the remaining development tasks and the immediate roadmap for the project.
+
+### 1. Walk-Forward Validation
+-   **Implementation:** Refactor `main.py` to implement a walk-forward validation framework.
+-   **Methodology:** Execute backtests across 3 sliding windows (shift 500–750 candles) for each profile (BTC 30m, ETH 30m, BTC 4H).
+-   **Reporting:** Generate detailed reports per window, including total PnL, PnL per strategy, Hit%, RR Avg, and percentage of MeanRevert blockages.
+
+### 2. Paper Trading Preparation
+-   **Risk Limits:** Implement runtime risk limits (`max_dd_pct_session`, `max_consecutive_losses`, `max_daily_trades`) in `PaperBroker` or a dedicated `RiskManager`.
+-   **Hard Stop Logic:** Implement logic to hard stop the bot and log alerts if any risk limits are exceeded.
+-   **Commission/Slippage Verification:** Ensure OKX-specific commission and slippage are accurately applied in the broker simulation.
+
+### 3. Further Strategy Tuning (Post Walk-Forward)
+-   **ETH 30m Trend:** Re-evaluate and tune the Trend strategy for ETH 30m separately, potentially re-enabling it if it can contribute positively.
+-   **MeanRevert ADX Gate:** Optionally, explore increasing `MeanRevert_gate_adx_max` (e.g., to 22) to potentially increase MeanRevert signal frequency, and measure impact.
+-   **General Optimization:** Continue refining parameters for all strategies based on walk-forward results.
+
+### 4. Documentation & Maintenance
+-   **Project Progress Update:** Maintain this `PROJECT_PROGRESS.md` document with ongoing updates.
+-   **Codebase Refinement:** Continuous review and refactoring for code quality and maintainability.

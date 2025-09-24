@@ -16,7 +16,7 @@ class Trend(BaseStrategy):
                  tp_mult_atr: float = 3.0, partial_tp_atr_mult: float = 1.2, partial_sl_offset_atr_mult: float = 0.3,
                  sl_cooldown_duration: int = 3, allow_shorts: bool = True,
                  min_pmax: float = 0.40, max_dist_ma20_atr: float = 1.6, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0):
-        super().__init__(name="Trend", risk_mult=risk_mult)
+        super().__init__(name="Trend", risk_mult=risk_mult, time_stop_bars=time_stop_bars, time_stop_mfe_atr=time_stop_mfe_atr)
         self.atr_pct_80_percentile = atr_pct_80_percentile
         self.position_open = False
         self.entry_price = 0.0
@@ -70,7 +70,7 @@ class Trend(BaseStrategy):
             self.armed_level = None
             self.armed_bars = 0
             self.retested = False
-            return Signal("flat", 0.0, None, None, reason="not_trend_or_low_pmax")
+            return Signal("flat", 0.0, None, None, reason="not_trend")
 
         if self.cooldown > 0:
             self.cooldown -= 1
@@ -107,18 +107,22 @@ class Trend(BaseStrategy):
         rbody = max(cl - o, 0.0) / rng if rng > 0 else 0
         prev_high = float(df["high"].iat[-2])
 
+        arm_long = (
+            up and (sep >= sep_min) and (slope_fast > 0) and (slope_slow >= 0) and
+            pullback_long and (cl > prev_high) and 
+            (rbody >= self.arm_rbody_th) and 
+            (adx_now >= self.arm_adx_th) and 
+            ((adx_now - adx_prev) >= self.arm_adx_delta_th) and 
+            (di_plus > di_minus)
+        )
+
+        # TREND-GATE log
+        logging.debug(f"TREND-GATE i={ctx['i']} up={up} sep={sep:.2f} adx={adx_now:.1f} rbody={rbody:.2f} arm_ok={arm_long}")
+
         # Swing low for SL calculation
         swing_low_9 = float(df["low"].iloc[-9:-1].min())
 
         if self.armed_level is None:
-            arm_long = (
-                up and (sep >= sep_min) and (slope_fast > 0) and (slope_slow >= 0) and
-                pullback_long and (cl > prev_high) and 
-                (rbody >= self.arm_rbody_th) and 
-                (adx_now >= self.arm_adx_th) and 
-                ((adx_now - adx_prev) >= self.arm_adx_delta_th) and 
-                (di_plus > di_minus)
-            )
             if arm_long:
                 self.armed_level = (prev_high, "long")
                 self.armed_bars = 0

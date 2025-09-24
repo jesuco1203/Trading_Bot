@@ -17,7 +17,12 @@ class RegimeSelector:
         max_proba_val = max(proba_dict.values())
         
         # Determine current most probable regime
-        current_most_probable_regime = max(proba_dict, key=proba_dict.get)
+        raw_label = max(proba_dict, key=proba_dict.get)
+        lab = raw_label.lower()
+        if lab in ("trending","trend_up","trend"): lab = "trend"
+        elif lab in ("mean_revert","meanrevert","range","mr"): lab = "mr"
+        elif lab in ("highvol","high_vol","vol"): lab = "high_vol"
+        current_most_probable_regime = lab
 
         # Update regime duration
         if current_most_probable_regime == self.current_regime:
@@ -43,7 +48,7 @@ class RegimeSelector:
         regime = self.current_regime # Use the persistent regime
         strategies = self.mapping.get(regime, [])
         if not strategies:
-            return [], f"no_mapping_for_{regime}"
+            return [], "mapping_empty" # Changed reason
         return strategies, "ok"
 
     def active_strategies(self, proba_dict: Dict[str, float]) -> List[str]:

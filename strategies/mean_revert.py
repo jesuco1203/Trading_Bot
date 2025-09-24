@@ -12,21 +12,13 @@ class MeanRevert(BaseStrategy):
                  sl_mult_atr: float = 1.3, sl_swing_low_bars: int = 3,
                  tp_mult_sl: float = 1.4, tp_mult_atr: float = 1.8,
                  partial_tp_atr_mult: float = 0.8, partial_sl_offset_atr_mult: float = 0.1,
-                 local_cooldown_duration: int = 14, gate_adx_max: float = 20.0):
-        super().__init__(name="MeanRevert", risk_mult=risk_mult)
-        self.position_open = False
-        self.entry_price = 0.0
-        self.sl_price = 0.0
-        self.tp_price = 0.0
-        self.cooldown = 0
-        self.cooldown_duration = local_cooldown_duration # Use configurable cooldown
-        self.last_sl_bar = -100 # To track last SL event
-
-        # New parameters for ETH 30m MR
+                 local_cooldown_duration: int = 14, gate_adx_max: float = 20.0, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0,
+                 min_dist_sma_atr: float = 1.1, rr_min: float = 1.4, partial_atr: float = 0.8, partial_sl_offset_atr: float = 0.1):
+        super().__init__(name="MeanRevert", risk_mult=risk_mult, time_stop_bars=time_stop_bars, time_stop_mfe_atr=time_stop_mfe_atr)
         self.gate_pmax_th = gate_pmax_th
         self.gate_adx_th = gate_adx_th
         self.gate_atr_pct_th = gate_atr_pct_th
-        self.dist_sma_mult = dist_sma_mult
+        self.dist_sma_mult = min_dist_sma_atr # Use new parameter
         self.signal_z_th = signal_z_th
         self.signal_rsi_th = signal_rsi_th
         self.signal_rbody_th = signal_rbody_th
@@ -35,20 +27,36 @@ class MeanRevert(BaseStrategy):
         self.sl_swing_low_bars = sl_swing_low_bars
         self.tp_mult_sl = tp_mult_sl
         self.tp_mult_atr = tp_mult_atr
-        self.partial_tp_atr_mult = partial_tp_atr_mult
-        self.partial_sl_offset_atr_mult = partial_sl_offset_atr_mult
+        self.partial_tp_atr_mult = partial_atr # Use new parameter
+        self.partial_sl_offset_atr_mult = partial_sl_offset_atr # Use new parameter
+        self.local_cooldown_duration = local_cooldown_duration
+        self.gate_adx_max = gate_adx_max
+        self.rr_min = rr_min
+        self.partial_atr = partial_atr
+        self.partial_sl_offset_atr = partial_sl_offset_atr
         self.blocks = {} # Initialize blocks dictionary
-        self.gate_adx_max = gate_adx_max # New assignment
+        self.mr_regime_bars = 0 # Initialize mr_regime_bars
+        self.cooldown = 0 # Initialize cooldown
+        self.cooldown_duration = local_cooldown_duration # Initialize cooldown_duration
 
     def print_summary(self, trades: list):
         print("--- MeanRevert Block Summary ---")
-        for reason, count in self.blocks.items():
-            print(f"{reason}: {count}")
+        total_mr_bars = self.mr_regime_bars
+        if total_mr_bars > 0:
+            for reason, count in self.blocks.items():
+                print(f"{reason}: {count} ({count/total_mr_bars:.2%})")
+        else:
+            for reason, count in self.blocks.items():
+                print(f"{reason}: {count}")
         super().print_summary(trades)
+        return super().print_summary(trades)
 
     def signal(self, ctx: Dict[str, Any]) -> Signal | None:
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
+        
+        if lab == "mr":
+            self.mr_regime_bars += 1
         
         feats = ctx["feats"]
         df = ctx["df"]
@@ -120,6 +128,9 @@ class MeanRevert(BaseStrategy):
             self.cooldown = self.cooldown_duration # Use configurable cooldown
             # self.last_entry_i = ctx["i"] # This is handled by broker
             rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
+            if rr < self.rr_min:
+                self.blocks["rr_below_min"] = self.blocks.get("rr_below_min", 0) + 1
+                return Signal("flat", 0.0, None, None, reason="rr_below_min")
             return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason=("z_rsi_candle" if long_a else "bb_reentry"), rr=rr)
 
         self.blocks["no_setup"] = self.blocks.get("no_setup", 0) + 1

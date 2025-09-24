@@ -8,6 +8,7 @@ class Position:
     side: int = 0
     qty: float = 0.0
     entry: float = 0.0
+    entry_ts: Any = None # New: Timestamp of entry
     sl: Optional[float] = None
     tp: Optional[float] = None
     partial_tp: Optional[float] = None
@@ -22,6 +23,9 @@ class Position:
     rr: Optional[float] = None # New
     bars_open: int = 0 # New
     mfe_atr: float = 0.0 # New
+    mae_atr: float = 0.0 # New
+    symbol: Optional[str] = None # New
+    tf: Optional[str] = None # New
 
 class PaperBroker:
     def __init__(self, initial_capital=10000, comm_rate=0.0005, slippage_min=0.5, spread_bias=0.0, all_strategies: dict = {}):
@@ -43,7 +47,7 @@ class PaperBroker:
 
     def exposure(self) -> int: return self.pos.side
 
-    def enter_or_flip(self, side, qty, price, sl_pts=None, tp_pts=None, partial_tp_pts=None, ts=None, strategy_name: str = None, atr: float = 0.0, partial_sl_offset_atr_mult: Optional[float] = None, trail_trigger_atr_mult: Optional[float] = None, trail_sl_offset_atr_mult: Optional[float] = None, rr: Optional[float] = None, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0):
+    def enter_or_flip(self, side, qty, price, sl_pts=None, tp_pts=None, partial_tp_pts=None, ts=None, strategy_name: str = None, atr: float = 0.0, partial_sl_offset_atr_mult: Optional[float] = None, trail_trigger_atr_mult: Optional[float] = None, trail_sl_offset_atr_mult: Optional[float] = None, rr: Optional[float] = None, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0, mae_atr: float = 0.0, symbol: Optional[str] = None, tf: Optional[str] = None):
         if self.exposure() != 0:
             return
 
@@ -53,7 +57,14 @@ class PaperBroker:
         self.pos.side = side
         self.pos.qty = qty
         self.pos.entry = price
+        self.pos.entry_ts = ts # Set entry timestamp
         self.pos.entry_atr = atr
+
+        # Add entry event to trades list
+        self.trades.append({
+            "ts": ts, "entry_ts": ts, "strategy": self.pos.strategy_name,
+            "partial": False, "pnl": 0.0, "rr": rr, "event": "entry"
+        })
 
         if sl_pts is not None:
             self.pos.sl = self.pos.entry - self.pos.side * sl_pts
@@ -72,18 +83,26 @@ class PaperBroker:
         self.pos.rr = rr
         self.pos.time_stop_bars = time_stop_bars
         self.pos.time_stop_mfe_atr = time_stop_mfe_atr
+        self.pos.mae_atr = mae_atr
+        self.pos.symbol = symbol
+        self.pos.tf = tf
 
     def mark_to_market(self, price, ts=None, high=None, low=None):
         if self.pos.side == 0:
             return 0.0
 
-        # Update bars_open and mfe_atr
+        # Update bars_open, mfe_atr, and mae_atr
         self.pos.bars_open += 1
         atr_est = self.pos.entry_atr # Assuming entry_atr is a good estimate for current ATR
         if atr_est:
             adv = (high - self.pos.entry) if self.pos.side > 0 else (self.pos.entry - low)
             atr_units = (adv / atr_est) if atr_est else 0.0
             self.pos.mfe_atr = max(self.pos.mfe_atr, atr_units)
+
+            # Calculate MAE in ATR units
+            adv_mae = (self.pos.entry - low) if self.pos.side > 0 else (high - self.pos.entry)
+            mae_atr_units = (adv_mae / atr_est) if atr_est else 0.0
+            self.pos.mae_atr = max(self.pos.mae_atr, mae_atr_units)
 
         # Time-stop logic
         if self.pos.time_stop_bars > 0 and self.pos.bars_open >= self.pos.time_stop_bars and self.pos.mfe_atr < self.pos.time_stop_mfe_atr:
@@ -104,7 +123,7 @@ class PaperBroker:
                 pnl = (fill_price - self.pos.entry) * self.pos.side * half
                 fee = (abs(half) * fill_price) * self.comm
                 self.capital += pnl - fee
-                self.trades.append({"ts": ts, "pnl": pnl - fee, "partial": True, "side": self.pos.side, "strategy": self.pos.strategy_name, "exit_reason": "Partial TP", "exit_price": fill_price})
+                self.trades.append({"ts": ts, "entry_ts": self.pos.entry_ts, "strategy": self.pos.strategy_name, "partial": True, "pnl": pnl - fee, "event": "partial"})
                 self.pos.qty -= half
                 self.pos.partial_done = True
                 # Move SL to BE or BE + offset
@@ -114,7 +133,7 @@ class PaperBroker:
                     self.pos.sl = self.pos.entry
                 self.pos.be_set = True
                 self.partials_count += 1
-                logging.info(f"PARTIAL ts={ts} px={fill_price:.2f} rem_qty={self.pos.qty:.4f} moved_SL=BE")
+                logging.info(f"PARTIAL px={fill_price:.2f} rem_qty={self.pos.qty:.4f} -> SL={self.pos.sl:.2f}")
 
         if self.pos.partial_done and not self.pos.trail_set and self.pos.trail_trigger_atr_mult is not None and self.pos.trail_sl_offset_atr_mult is not None:
             target_trail = self.pos.entry + self.pos.side * (self.pos.trail_trigger_atr_mult * self.pos.entry_atr)
@@ -137,7 +156,7 @@ class PaperBroker:
             old_tp_pts = self.pos.tp
             old_rr = self.pos.rr # Capture rr
 
-            self.trades.append({"ts": ts, "pnl": pnl - fee, "partial": False, "side": self.pos.side, "strategy": self.pos.strategy_name, "exit_reason": exit_reason, "sl_pts": old_sl_pts, "tp_pts": old_tp_pts, "rr": old_rr})
+            self.trades.append({"ts": ts, "entry_ts": self.pos.entry_ts, "strategy": self.pos.strategy_name, "partial": False, "pnl": pnl - fee, "exit_reason": exit_reason, "event": "close"})
             
             if hit_sl and self.pos.strategy_name:
                 strat = self._strategies.get(self.pos.strategy_name)
@@ -167,3 +186,24 @@ class PaperBroker:
         print(f"Net PnL: {s['net_pnl']:.2f}")
         print(f"Hit Rate: {s['hit_rate']:.2%}")
         print(f"Final Capital: {self.capital:.2f}")
+
+    def export_trades_to_csv(self, filename="trades.csv"):
+        if not self.trades:
+            logging.info("No trades to export.")
+            return
+
+        df_trades = pd.DataFrame(self.trades)
+        # Ensure all specified columns exist, fill missing with None or NaN
+        required_columns = ["ts", "symbol", "tf", "strategy", "side", "entry", "exit", "exit_reason", "partial", "pnl", "rr", "bars_open", "mfe_atr", "mae_atr"]
+        for col in required_columns:
+            if col not in df_trades.columns:
+                df_trades[col] = None # Or np.nan
+
+        # Rename columns to match user's request (entry_price -> entry, exit_price -> exit)
+        df_trades = df_trades.rename(columns={"entry_price": "entry", "exit_price": "exit"})
+
+        # Select and reorder columns
+        df_trades = df_trades[required_columns]
+
+        df_trades.to_csv(filename, index=False)
+        logging.info(f"Trades exported to {filename}")

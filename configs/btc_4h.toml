@@ -1,71 +1,73 @@
 [market]
-symbols    = ["BTC-USDT-SWAP"]
+symbols = ["BTC-USDT-SWAP"]
 timeframes = ["4h"]
-tick_value = 1.0
+tick_value = 0.01 # Assuming BTC-USDT has 0.01 tick size
 
 [data]
 root = "data/okx"
-backfill_months = 12
-exchange = "okx"
 
 [risk]
-starting_equity      = 10000
-risk_per_trade_pct = 0.002
-max_daily_loss_pct   = 0.03
+starting_equity = 10000.0
+risk_per_trade_pct = 0.01
 
 [costs]
-commission_rate = 0.0005
-slippage_min    = 0.5
-spread_bias     = 0.0
+commission_rate = 0.0005 # 0.05%
+slippage_min = 0.0001 # 0.01%
 
 [hmm]
-n_states       = 3
-retrain_every  = 1000
-
-[run]
-limit_bars = 0
-symbols    = ["BTC-USDT-SWAP"]
-
-[strategy_mapping]
-trend = ["Trend"]
-mr = [] # MR OFF for BTC 4H
-high_vol = []
-
-[strategy_params]
-Trend_risk_mult = 1.0
-MeanRevert_risk_mult = 0.0 # Effectively disable MR
-Trend_arm_rbody_th = 0.55
-Trend_arm_adx_th = 20.0
-Trend_arm_adx_delta_th = 0.5
-Trend_arm_timeout = 16
-Trend_retest_eps_pct = 0.25
-Trend_reconfirm_mult_1 = 0.0003
-Trend_reconfirm_mult_2 = 0.0008
-Trend_sl_mult_atr = 2.4
-Trend_tp_mult_sl = 1.8
-Trend_tp_mult_atr = 3.0
-Trend_partial_tp_atr_mult = 1.2
-Trend_partial_sl_offset_atr_mult = 0.3
-Trend_sl_cooldown_duration = 6
-Trend_allow_shorts = false
-
-MeanRevert_gate_pmax_th = 0.40
-MeanRevert_gate_adx_th = 16.0
-MeanRevert_gate_atr_pct_th = 0.85
-MeanRevert_dist_sma_mult = 1.1
-MeanRevert_signal_z_th = -1.0
-MeanRevert_signal_rsi_th = 45.0
-MeanRevert_signal_rbody_th = 0.45
-MeanRevert_signal_lower_wick_th = 0.55
-MeanRevert_sl_mult_atr = 1.3
-MeanRevert_sl_swing_low_bars = 3
-MeanRevert_tp_mult_sl = 1.4
-MeanRevert_tp_mult_atr = 1.8
-MeanRevert_partial_tp_atr_mult = 0.8
-MeanRevert_partial_sl_offset_atr_mult = 0.1
-MeanRevert_local_cooldown_duration = 14
+n_states = 3
 
 [selector]
 enter_th = 0.45
 exit_th = 0.35
-persistence = 3
+persistence = 3 # For 4H
+
+[strategy_mapping]
+trend = ["Trend"]
+mr    = []            # MR OFF
+high_vol = []
+
+[strategy_params]
+Selector_persist_bars = 3   # 4H necesita más persistencia
+Trend_risk_mult = 1.0
+
+# Trend Strategy Params (example values, adjust as needed)
+Trend_arm_rbody_th = 0.6
+Trend_arm_adx_th = 25.0
+Trend_arm_adx_delta_th = 5.0
+Trend_arm_timeout = 5
+Trend_retest_eps_pct = 0.001
+Trend_reconfirm_mult_1 = 1.0
+Trend_reconfirm_mult_2 = 1.5
+Trend_sl_mult_atr = 1.5
+Trend_tp_mult_sl = 2.0
+Trend_tp_mult_atr = 3.0
+Trend_partial_tp_atr_mult = 1.5
+Trend_partial_sl_offset_atr_mult = 0.5
+Trend_sl_cooldown_duration = 5
+Trend_allow_shorts = true
+Trend_min_pmax = 0.6
+Trend_max_dist_ma20_atr = 2.0
+Trend_time_stop_bars = 0
+Trend_time_stop_mfe_atr = 0.0
+
+# MeanRevert Strategy Params (example values, adjust as needed)
+MeanRevert_risk_mult = 0.5
+MeanRevert_gate_pmax_th = 0.6
+MeanRevert_gate_adx_th = 20.0
+MeanRevert_gate_atr_pct_th = 0.005
+MeanRevert_dist_sma_mult = 1.0
+MeanRevert_signal_z_th = 1.5
+MeanRevert_signal_rsi_th = 30.0
+MeanRevert_signal_rbody_th = 0.5
+MeanRevert_signal_lower_wick_th = 0.5
+MeanRevert_sl_mult_atr = 1.0
+MeanRevert_sl_swing_low_bars = 5
+MeanRevert_tp_mult_sl = 1.5
+MeanRevert_tp_mult_atr = 1.0
+MeanRevert_partial_tp_atr_mult = 0.5
+MeanRevert_partial_sl_offset_atr_mult = 0.2
+MeanRevert_local_cooldown_duration = 5
+MeanRevert_gate_adx_max = 25.0
+MeanRevert_time_stop_bars = 0
+MeanRevert_time_stop_mfe_atr = 0.0

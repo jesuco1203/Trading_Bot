@@ -16,37 +16,19 @@ from execution.paper import PaperBroker
 from risk.position_sizing import atr_position_size
 from monitoring.metrics import RollingMetrics
 
-logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[logging.StreamHandler()])
+logging.basicConfig(level=logging.DEBUG, format='%(message)s', handlers=[logging.StreamHandler()])
 
-def main(config_path: str, limit_bars: int):
-    """
-    Main function to run the backtesting pipeline.
-    """
-    # 1. Load Configuration
-    try:
-        config = toml.load(config_path)
-        logging.info(f"Configuration loaded from {config_path}")
-    except Exception as e:
-        logging.error(f"Error loading configuration: {e}")
-        return
+def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_tf: str, window_name: str = "Full Data"):
+    logging.info(f"\n--- Running Backtest for {symbol} {base_tf} ({window_name}) ---")
 
-    # 3. Load Data
-    symbol = config['market']['symbols'][0]
-    base_tf = config['market']['timeframes'][0]
-    
-    df_base = get_ohlcv(symbol, base_tf, limit=limit_bars, root=config['data']['root'])
-    if df_base.empty:
-        logging.error("No data loaded. Exiting.")
-        return
-        
     df_base = build_features(df_base)
     feats_base = df_base.copy()
 
     # Sanity check for ADX
-    logging.info(f"ADX min/max: {feats_base['adx'].min():.1f} / {feats_base['adx'].max():.1f}")
+    logging.info(f"ADX min/max: {df_base['adx'].min():.1f} / {df_base['adx'].max():.1f}")
 
     # === ATR% percentiles ===
-    atr_pct_series = (feats_base["atr"] / feats_base["close"]).clip(lower=0).fillna(0.0)
+    atr_pct_series = (df_base["atr"] / df_base["close"]).clip(lower=0).fillna(0.0)
     atr_pct_85_percentile = float(atr_pct_series.quantile(0.85))
     atr_pct_70_percentile = float(atr_pct_series.quantile(0.70))
 
@@ -63,8 +45,9 @@ def main(config_path: str, limit_bars: int):
             df_base.loc[df_base.index[i], f'{state}_proba'] = proba
 
     # 2. Initialize Components
-    all_strategies = {
-        "Trend": Trend(
+    all_strategies = {}
+    if "Trend" in config['strategy_mapping'].get('trend', []):
+        all_strategies["Trend"] = Trend(
             atr_pct_80_percentile=atr_pct_85_percentile,
             risk_mult=config['strategy_params']['Trend_risk_mult'],
             arm_rbody_th=config['strategy_params']['Trend_arm_rbody_th'],
@@ -80,9 +63,14 @@ def main(config_path: str, limit_bars: int):
             partial_tp_atr_mult=config['strategy_params']['Trend_partial_tp_atr_mult'],
             partial_sl_offset_atr_mult=config['strategy_params']['Trend_partial_sl_offset_atr_mult'],
             sl_cooldown_duration=config['strategy_params']['Trend_sl_cooldown_duration'],
-            allow_shorts=config['strategy_params']['Trend_allow_shorts']
-        ),
-        "MeanRevert": MeanRevert(
+            allow_shorts=config['strategy_params']['Trend_allow_shorts'],
+            min_pmax=config['strategy_params']['Trend_min_pmax'],
+            max_dist_ma20_atr=config['strategy_params']['Trend_max_dist_ma20_atr'],
+            time_stop_bars=config['strategy_params']['Trend_time_stop_bars'],
+            time_stop_mfe_atr=config['strategy_params']['Trend_time_stop_mfe_atr']
+        )
+    if "MeanRevert" in config['strategy_mapping'].get('mr', []):
+        all_strategies["MeanRevert"] = MeanRevert(
             risk_mult=config['strategy_params']['MeanRevert_risk_mult'],
             gate_pmax_th=config['strategy_params']['MeanRevert_gate_pmax_th'],
             gate_adx_th=config['strategy_params']['MeanRevert_gate_adx_th'],
@@ -98,11 +86,20 @@ def main(config_path: str, limit_bars: int):
             tp_mult_atr=config['strategy_params']['MeanRevert_tp_mult_atr'],
             partial_tp_atr_mult=config['strategy_params']['MeanRevert_partial_tp_atr_mult'],
             partial_sl_offset_atr_mult=config['strategy_params']['MeanRevert_partial_sl_offset_atr_mult'],
-            local_cooldown_duration=config['strategy_params']['MeanRevert_local_cooldown_duration']
-        ),
-        "VolBreakout": VolBreakout()
-    }
+            local_cooldown_duration=config['strategy_params']['MeanRevert_local_cooldown_duration'],
+            gate_adx_max=config['strategy_params']['MeanRevert_gate_adx_max'],
+            time_stop_bars=config['strategy_params'].get('MeanRevert_time_stop_bars', 0),
+            time_stop_mfe_atr=config['strategy_params'].get('MeanRevert_time_stop_mfe_atr', 0.0),
+            min_dist_sma_atr=config['strategy_params']['MeanRevert_min_dist_sma_atr'],
+            rr_min=config['strategy_params']['MeanRevert_rr_min'],
+            partial_atr=config['strategy_params']['MeanRevert_partial_atr'],
+            partial_sl_offset_atr=config['strategy_params']['MeanRevert_partial_sl_offset_atr']
+        )
+    if "VolBreakout" in config['strategy_mapping'].get('high_vol', []):
+        all_strategies["VolBreakout"] = VolBreakout()
     strategy_mapping = config['strategy_mapping']
+    if not config['strategy_params'].get('ETH30m_enable_trend', True): # Default to True if not found
+        strategy_mapping["trend"] = []
     broker = PaperBroker(
         initial_capital=config['risk']['starting_equity'],
         comm_rate=config['costs']['commission_rate'],
@@ -157,9 +154,7 @@ def main(config_path: str, limit_bars: int):
 
         active_names, selector_reason = regime_selector.active_strategies_with_reason(proba_dict)
         if i % 200 == 0:
-            logging.info(
-                f"[{i}] SELECTOR lab={lab} pmax={pmax:.2f} reason={selector_reason} active={sorted(active_names)} entries={broker.entries_count} exits={broker.exits_count} partials={broker.partials_count} flips={broker.flips_count} eq={broker.get_equity():.2f}"
-            )
+            logging.info(f"SELECTOR lab={lab} pmax={pmax:.2f} active={sorted(active_names)} reason={selector_reason}")
 
         # Strategy Gating & Signal Generation
         allow_new_entry = (broker.exposure() == 0)
@@ -183,7 +178,7 @@ def main(config_path: str, limit_bars: int):
             context = {
                 "i": i, "ts": current_dt, "df": df_base.iloc[:i+1], "feats": feats_base.iloc[:i+1],
                 "equity": equity, "score_multiTF": float(row.get("score_multiTF", 0.0)),
-                "atr_pct_p85": atr_pct_85_percentile, "atr_pct_p70": atr_pct_70_percentile,
+                "atr_pct_p85": atr_pct_85_percentile, "atr_pct_70": atr_pct_70_percentile,
                 "regime_label": lab, "pmax": pmax
             }
             sig = s.signal(context)
@@ -206,7 +201,9 @@ def main(config_path: str, limit_bars: int):
             broker.enter_or_flip(
                 side=1 if sig.side == "long" else -1, qty=qty, price=price,
                 sl_pts=sig.sl_pts, tp_pts=sig.tp_pts, partial_tp_pts=sig.partial_tp_pts, 
-                ts=current_dt, strategy_name=strat_name, atr=atr_t, partial_sl_offset_atr_mult=sig.partial_sl_offset_atr_mult, rr=sig.rr
+                ts=current_dt, strategy_name=strat_name, atr=atr_t, partial_sl_offset_atr_mult=sig.partial_sl_offset_atr_mult, rr=sig.rr,
+                symbol=symbol, tf=base_tf,
+                time_stop_bars=strat.time_stop_bars, time_stop_mfe_atr=strat.time_stop_mfe_atr
             )
             if was_flat:
                 broker.entries_count += 1
@@ -215,22 +212,102 @@ def main(config_path: str, limit_bars: int):
             adx = feats_base['adx'].iloc[i]
             atr_pct = atr_t / price
             rr = sig.tp_pts / sig.sl_pts if sig.sl_pts > 0 else 0
-            logging.info(f"ENTER i={i} strat={strat_name} pmax={pmax:.2f} adx={adx:.1f} atr%={atr_pct:.3f} rr={rr:.2f} sl={sig.sl_pts:.1f} tp={sig.tp_pts:.1f} reason={sig.reason}")
+            logging.info(f"ENTER i={i} strat={strat_name} rr={rr:.2f} sl={sig.sl_pts:.1f} tp={sig.tp_pts:.1f} reason={sig.reason}")
 
-    # 6. Print Results
-    logging.info("Backtest finished.")
-    all_strategies["Trend"].print_summary(broker.trades)
-    all_strategies["MeanRevert"].print_summary(broker.trades)
+    trend_pnl, trend_rr_avg, trend_entries, trend_wins, trend_hit_rate = (0.0, 0.0, 0, 0, 0.0)
+    if "Trend" in all_strategies:
+        trend_pnl, trend_rr_avg, trend_entries, trend_wins, trend_hit_rate = all_strategies["Trend"].print_summary(broker.trades)
+        logging.info(f"--- {all_strategies['Trend'].name} Summary ---")
+        logging.info(f"Entries: {trend_entries} | Wins(TP): {trend_wins} | Hit: {trend_hit_rate:.0f}% | RR Avg: {trend_rr_avg:.2f} | PnL: {trend_pnl:.2f}")
+
+    mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate = (0.0, 0.0, 0, 0, 0.0)
+    mr_block_summary = {}
+    if "MeanRevert" in all_strategies:
+        summary_result = all_strategies["MeanRevert"].print_summary(broker.trades)
+        if summary_result is None:
+            logging.error(f"MeanRevert.print_summary returned None!")
+        else:
+            mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate = summary_result
+            logging.info(f"--- {all_strategies['MeanRevert'].name} Summary ---")
+            logging.info(f"Entries: {mr_entries} | Wins(TP): {mr_wins} | Hit: {mr_hit_rate:.0f}% | RR Avg: {mr_rr_avg:.2f} | PnL: {mr_pnl:.2f}")
+            mr_block_summary = all_strategies["MeanRevert"].blocks
     broker.print_summary()
+    broker.export_trades_to_csv(filename=f"trades_{symbol}_{base_tf}_{window_name.replace(' ', '_')}.csv") # Export trades
 
     long_trades = [t for t in broker.trades if t.get('side') == 1]
     short_trades = [t for t in broker.trades if t.get('side') == -1]
     logging.info(f"PnL Long Trades: {sum(t['pnl'] for t in long_trades):.2f}")
     logging.info(f"PnL Short Trades: {sum(t['pnl'] for t in short_trades):.2f}")
 
+    return {
+        "net_pnl": broker.get_equity() - config['risk']['starting_equity'],
+        "total_trades": len(broker.trades),
+        "hit_rate": broker.summary()['hit_rate'],
+        "trend_pnl": trend_pnl,
+        "mr_pnl": mr_pnl,
+        "trend_rr_avg": trend_rr_avg,
+        "mr_rr_avg": mr_rr_avg,
+        "mr_block_summary": mr_block_summary
+    }
+
+def main(config_path: str, limit_bars: int):
+    """
+    Main function to run the backtesting pipeline.
+    """
+    # 1. Load Configuration
+    try:
+        config = toml.load(config_path)
+        logging.info(f"Configuration loaded from {config_path}")
+    except Exception as e:
+        logging.error(f"Error loading configuration: {e}")
+        return
+
+    # 3. Load Data
+    symbol = config['market']['symbols'][0]
+    base_tf = config['market']['timeframes'][0]
+    
+    df_full = get_ohlcv(symbol, base_tf, limit=limit_bars, root=config['data']['root'])
+    if df_full.empty:
+        logging.error("No data loaded. Exiting.")
+        return
+        
+    df_full = build_features(df_full)
+    feats_full = df_full.copy()
+
+    # Define walk-forward windows
+    window_size = 2000 # Example window size
+    window_shift = 500 # Example window shift
+    total_bars = len(df_full)
+
+    results = []
+    window_num = 0
+    for start_idx in range(0, total_bars, window_shift):
+        end_idx = start_idx + window_size
+        if end_idx > total_bars:
+            break
+        
+        window_num += 1
+        df_window = df_full.iloc[start_idx:end_idx].copy()
+        
+        # Run backtest for the current window
+        window_results = run_single_backtest(config, df_window, symbol, base_tf, f"Window {window_num} ({start_idx}-{end_idx})")
+        results.append(window_results)
+
+    # Report aggregated results
+    logging.info("\n--- Walk-Forward Validation Results ---")
+    for i, res in enumerate(results):
+        logging.info(f"Window {i+1}: Net PnL={res['net_pnl']:.2f}, Total Trades={res['total_trades']}, Hit Rate={res['hit_rate']:.2%}")
+        logging.info(f"  Trend PnL={res['trend_pnl']:.2f}, MR PnL={res['mr_pnl']:.2f}")
+        logging.info(f"  Trend RR Avg={res['trend_rr_avg']:.2f}, MR RR Avg={res['mr_rr_avg']:.2f}")
+        if res['mr_block_summary']:
+            logging.info("  MR Block Summary:")
+            for reason, count in res['mr_block_summary'].items():
+                logging.info(f"    {reason}: {count}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI-Driven Trading Bot Backtester")
-    parser.add_argument("--config", type=str, default="config.toml", help="Path to the configuration file")
     parser.add_argument("--limit-bars", type=int, default=2000, help="Number of historical bars to load")
+    parser.add_argument("--config", type=str, required=True, help="Path to the configuration file (TOML)")
     args = parser.parse_args()
+
     main(config_path=args.config, limit_bars=args.limit_bars)

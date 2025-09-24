@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional
 import pandas as pd
 import numpy as np
 import logging
+import math
 logger = logging.getLogger(__name__)
 
 class Trend(BaseStrategy):
@@ -15,7 +16,8 @@ class Trend(BaseStrategy):
                  reconfirm_mult_2: float = 0.0008, sl_mult_atr: float = 2.4, tp_mult_sl: float = 1.8,
                  tp_mult_atr: float = 3.0, partial_tp_atr_mult: float = 1.2, partial_sl_offset_atr_mult: float = 0.3,
                  sl_cooldown_duration: int = 3, allow_shorts: bool = True,
-                 min_pmax: float = 0.40, max_dist_ma20_atr: float = 1.6, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0):
+                 min_pmax: float = 0.40, max_dist_ma20_atr: float = 1.6, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0,
+                 ma_fast_len: int = 20, ma_slow_len: int = 50, sep_min: float = 0.002):
         super().__init__(name="Trend", risk_mult=risk_mult, time_stop_bars=time_stop_bars, time_stop_mfe_atr=time_stop_mfe_atr)
         self.atr_pct_80_percentile = atr_pct_80_percentile
         self.position_open = False
@@ -50,6 +52,9 @@ class Trend(BaseStrategy):
         self.max_dist_ma20_atr = max_dist_ma20_atr
         self.time_stop_bars = time_stop_bars
         self.time_stop_mfe_atr = time_stop_mfe_atr
+        self.ma_fast_len = ma_fast_len
+        self.ma_slow_len = ma_slow_len
+        self.sep_min = sep_min
 
     def on_stop(self):
         self.cooldown = self.cooldown_duration
@@ -87,17 +92,26 @@ class Trend(BaseStrategy):
         if atr_abs <= 0:
             return Signal("flat", 0.0, None, None, reason="low_atr")
 
-        ma_fast = df["close"].rolling(20).mean()
-        ma_slow = df["close"].rolling(50).mean()
+        ma_fast = df["close"].rolling(window=self.ma_fast_len, min_periods=self.ma_fast_len).mean()
+        ma_slow = df["close"].rolling(window=self.ma_slow_len, min_periods=self.ma_slow_len).mean()
 
         # overextension guard
         ma20 = ma_fast.iat[-1]
         dist_ma20_atr = abs(close - ma20) / atr_abs if atr_abs > 0 else 0
         if dist_ma20_atr > self.max_dist_ma20_atr:
             return Signal("flat", 0.0, None, None, reason="overextended_vs_ma20")
-        up = ma_fast.iat[-1] > ma_slow.iat[-1]
-        sep = abs(ma_fast.iat[-1] - ma_slow.iat[-1]) / max(close, 1e-9)
-        sep_min = max(0.0006, 0.35 * float(feats["vol"].iat[-1]), 0.35 * (atr_abs/close))
+        
+        diff = float(ma_fast.iat[-1] - ma_slow.iat[-1])
+        den  = max(abs(float(ma_slow.iat[-1])), 1e-9)
+        sep  = abs(diff) / den
+        # if sep ~0 por redondeo, imprime y aborta sólo esa barra
+        if sep < 1e-6 or math.isnan(sep):
+            logging.warning(f"TREND-MA-ANOM i={ctx['i']} fast={fast} slow={slow} sep={sep}")
+        logging.debug(f"MA_CALC i={ctx['i']} fast={ma_fast.iat[-1]:.2f} slow={ma_slow.iat[-1]:.2f} diff={diff:.2f} den={den:.2f} sep={sep:.4f}")
+
+        up  = (ma_fast.iat[-1] > ma_fast.iat[-2]) and (ma_slow.iat[-1] >= ma_slow.iat[-2])
+        cross_up = (ma_fast.iat[-2] <= ma_slow.iat[-2]) and (ma_fast.iat[-1] > ma_slow.iat[-1])
+
         slope_fast = ma_fast.iat[-1] - ma_fast.iat[-4]
         slope_slow = ma_slow.iat[-1] - ma_slow.iat[-4]
         pullback_long = (df["low"].iat[-1] <= ma_fast.iat[-1] * (1.0 + 0.0025)) and (close > ma_fast.iat[-1])
@@ -105,19 +119,17 @@ class Trend(BaseStrategy):
         o, h, l, cl = map(float, (df["open"].iat[-1], df["high"].iat[-1], df["low"].iat[-1], df["close"].iat[-1]))
         rng = max(h - l, 1e-9)
         rbody = max(cl - o, 0.0) / rng if rng > 0 else 0
+        long_wick = (o - l)/rng >= 0.45
         prev_high = float(df["high"].iat[-2])
 
-        arm_long = (
-            up and (sep >= sep_min) and (slope_fast > 0) and (slope_slow >= 0) and
-            pullback_long and (cl > prev_high) and 
-            (rbody >= self.arm_rbody_th) and 
-            (adx_now >= self.arm_adx_th) and 
-            ((adx_now - adx_prev) >= self.arm_adx_delta_th) and 
-            (di_plus > di_minus)
-        )
+        arm_long = ((up and sep >= self.sep_min) or cross_up) \
+                   and (adx_now >= 18) and ((adx_now - adx_prev) >= 0.4) \
+                   and (rbody >= 0.40 or (o - l)/rng >= 0.45)
 
         # TREND-GATE log
-        logging.debug(f"TREND-GATE i={ctx['i']} up={up} sep={sep:.2f} adx={adx_now:.1f} rbody={rbody:.2f} arm_ok={arm_long}")
+        if ctx['i'] % 200 == 0 and lab == "trend":
+            logging.info(f"MA fast={ma_fast.iat[-1]:.2f} slow={ma_slow.iat[-1]:.2f} diff={ma_fast.iat[-1]-ma_slow.iat[-1]:.2f}")
+        logging.debug(f"TREND-GATE i={ctx['i']} up={up} sep={sep:.4f} adx={adx_now:.1f} rbody={rbody:.2f} arm_ok={arm_long}")
 
         # Swing low for SL calculation
         swing_low_9 = float(df["low"].iloc[-9:-1].min())
@@ -144,13 +156,15 @@ class Trend(BaseStrategy):
             # Retest condition
             eps_retest = self.retest_eps_pct / 100
             touched = (l <= level * (1.0 + eps_retest)) or (l <= ma_fast.iat[-1] * (1.0 + eps_retest))
+            logging.debug(f"RETEST_DEBUG i={ctx['i']} touched={touched} l={l:.2f} level={level:.2f} eps={eps_retest:.4f} ma_fast={ma_fast.iat[-1]:.2f} close={close:.2f}")
             if touched and close > level and close > ma_fast.iat[-1]:
                 self.retested = True
 
             # Reconfirm condition
             reconf = (close > level * (1.0 + self.reconfirm_mult_1)) or (h > prev_high * (1.0 + self.reconfirm_mult_2))
+            logging.debug(f"RECONF_DEBUG i={ctx['i']} reconf={reconf} close={close:.2f} level={level:.2f} reconf1={self.reconfirm_mult_1:.4f} h={h:.2f} prev_high={prev_high:.2f} reconf2={self.reconfirm_mult_2:.4f}")
 
-            lose_struct = not (sep >= 0.8 * sep_min and slope_fast > 0 and slope_slow >= 0)
+            lose_struct = not (sep >= 0.8 * self.sep_min and slope_fast > 0 and slope_slow >= 0)
             if lose_struct:
                 self.armed_level = None; self.armed_bars = 0; self.retested = False
                 return Signal("flat", 0.0, None, None, reason="disarm_long_losestruct")
@@ -161,14 +175,15 @@ class Trend(BaseStrategy):
                     return Signal("flat", 0.0, None, None, reason="shorts_off")
 
                 # SL calculation
-                sl_pts = max(close - swing_low_9, 2.6 * atr_abs)
+                swing_low = float(df["low"].iloc[-7:-1].min())
+                sl_pts = max(close - swing_low, 2.0 * atr_abs)
                 
                 # TP calculation
-                tp_pts = max(2.0 * sl_pts, 3.2 * atr_abs)
+                tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
                 
                 # Partial TP and SL offset
-                partial_tp_pts = self.partial_tp_atr_mult * atr_abs
-                partial_sl_offset_atr_mult = self.partial_sl_offset_atr_mult
+                partial_tp_pts = 1.0 * atr_abs
+                partial_sl_offset_atr_mult = 0.3
 
                 self.armed_level = None; self.armed_bars = 0; self.retested = False
                 rr = tp_pts / sl_pts if sl_pts > 0 else 0.0

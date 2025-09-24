@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import pandas as pd
 import logging
+from uuid import uuid4
 
 @dataclass
 class Position:
@@ -26,6 +27,7 @@ class Position:
     mae_atr: float = 0.0 # New
     symbol: Optional[str] = None # New
     tf: Optional[str] = None # New
+    trade_id: Optional[str] = None # New: Unique ID for each trade
 
 class PaperBroker:
     def __init__(self, initial_capital=10000, comm_rate=0.0005, slippage_min=0.5, spread_bias=0.0, all_strategies: dict = {}):
@@ -54,16 +56,24 @@ class PaperBroker:
         fee = (abs(qty) * price) * self.comm
         self.capital -= fee
         
+        self.pos.trade_id = str(uuid4())
         self.pos.side = side
         self.pos.qty = qty
         self.pos.entry = price
         self.pos.entry_ts = ts # Set entry timestamp
         self.pos.entry_atr = atr
+        self.pos.rr = rr if rr is not None else (tp_pts / max(sl_pts or 0.0, 1e-9))
 
         # Add entry event to trades list
         self.trades.append({
-            "ts": ts, "entry_ts": ts, "strategy": self.pos.strategy_name,
-            "partial": False, "pnl": 0.0, "rr": rr, "event": "entry"
+            "trade_id": self.pos.trade_id,
+            "ts": ts,
+            "entry_ts": ts,
+            "strategy": strategy_name,
+            "partial": False,
+            "pnl": 0.0,
+            "rr": self.pos.rr,
+            "event": "entry"
         })
 
         if sl_pts is not None:
@@ -110,7 +120,7 @@ class PaperBroker:
             pnl = (exit_px - self.pos.entry) * self.pos.side * self.pos.qty
             fee = (abs(self.pos.qty) * exit_px) * self.comm # Recalculate fee for time-stop exit
             self.capital += pnl - fee
-            self.trades.append({"ts": ts, "pnl": pnl - fee, "partial": False, "side": self.pos.side, "strategy": self.pos.strategy_name, "exit_reason": "time_stop", "sl_pts": self.pos.sl, "tp_pts": self.pos.tp, "rr": self.pos.rr})
+            self.trades.append({"trade_id": self.pos.trade_id, "ts": ts, "pnl": pnl - fee, "partial": False, "side": self.pos.side, "strategy": self.pos.strategy_name, "exit_reason": "time_stop", "sl_pts": self.pos.sl, "tp_pts": self.pos.tp, "rr": self.pos.rr})
             self.pos = Position()
             self.exits_count += 1
             return pnl
@@ -123,7 +133,17 @@ class PaperBroker:
                 pnl = (fill_price - self.pos.entry) * self.pos.side * half
                 fee = (abs(half) * fill_price) * self.comm
                 self.capital += pnl - fee
-                self.trades.append({"ts": ts, "entry_ts": self.pos.entry_ts, "strategy": self.pos.strategy_name, "partial": True, "pnl": pnl - fee, "event": "partial"})
+                fill = self.pos.entry + self.pos.side * self.pos.partial_tp
+                self.trades.append({
+                    "trade_id": self.pos.trade_id,
+                    "ts": ts,
+                    "entry_ts": self.pos.entry_ts,
+                    "strategy": self.pos.strategy_name,
+                    "partial": True,
+                    "pnl": pnl - fee,
+                    "event": "partial",
+                    "fill_px": fill
+                })
                 self.pos.qty -= half
                 self.pos.partial_done = True
                 # Move SL to BE or BE + offset
@@ -156,7 +176,16 @@ class PaperBroker:
             old_tp_pts = self.pos.tp
             old_rr = self.pos.rr # Capture rr
 
-            self.trades.append({"ts": ts, "entry_ts": self.pos.entry_ts, "strategy": self.pos.strategy_name, "partial": False, "pnl": pnl - fee, "exit_reason": exit_reason, "event": "close"})
+            self.trades.append({
+                "trade_id": self.pos.trade_id,
+                "ts": ts,
+                "entry_ts": self.pos.entry_ts,
+                "strategy": self.pos.strategy_name,
+                "partial": False,
+                "pnl": pnl - fee,
+                "exit_reason": exit_reason,
+                "event": "close"
+            })
             
             if hit_sl and self.pos.strategy_name:
                 strat = self._strategies.get(self.pos.strategy_name)

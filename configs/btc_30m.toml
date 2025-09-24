@@ -24,12 +24,12 @@ persistence = 2 # For 30m
 
 [strategy_mapping]
 trend = ["Trend"]
-mr    = ["MeanRevert"]
+mr    = []          # ← OFF temporal
 high_vol = []
 
 [strategy_params]
 Trend_risk_mult = 1.0
-MR_risk_mult    = 0.5
+MR_risk_mult    = 0.4
 
 # Trend Strategy Params (example values, adjust as needed)
 Trend_arm_rbody_th = 0.6
@@ -37,19 +37,24 @@ Trend_arm_adx_th = 25.0
 Trend_arm_adx_delta_th = 5.0
 Trend_arm_timeout = 5
 Trend_retest_eps_pct = 0.001
-Trend_reconfirm_mult_1 = 1.0
-Trend_reconfirm_mult_2 = 1.5
+Trend_reconfirm_mult_1 = 0.0003
+Trend_reconfirm_mult_2 = 0.0008
 Trend_sl_mult_atr = 1.5
 Trend_tp_mult_sl = 2.0
 Trend_tp_mult_atr = 3.0
-Trend_partial_tp_atr_mult = 1.5
-Trend_partial_sl_offset_atr_mult = 0.5
+Trend_partial_tp_atr_mult = 1.0
+Trend_partial_sl_offset_atr_mult = 0.3
+Trend_trail_trigger_atr_mult   = 1.5
+Trend_trail_sl_offset_atr_mult = 0.3
 Trend_sl_cooldown_duration = 5
 Trend_allow_shorts = true
 Trend_min_pmax = 0.6
 Trend_max_dist_ma20_atr = 2.0
-Trend_time_stop_bars = 0
-Trend_time_stop_mfe_atr = 0.0
+Trend_time_stop_bars = 6
+Trend_time_stop_mfe_atr = 0.5
+Trend_ma_fast_len = 20
+Trend_ma_slow_len = 50
+Trend_sep_min = 0.0010
 
 # MeanRevert Strategy Params (example values, adjust as needed)
 MeanRevert_risk_mult = 0.5
@@ -71,3 +76,7 @@ MeanRevert_local_cooldown_duration = 5
 MeanRevert_gate_adx_max = 25.0
 MeanRevert_time_stop_bars = 0
 MeanRevert_time_stop_mfe_atr = 0.0
+MeanRevert_min_dist_sma_atr = 1.1
+MeanRevert_rr_min = 1.4
+MeanRevert_partial_atr = 0.8
+MeanRevert_partial_sl_offset_atr = 0.1

@@ -50,6 +50,8 @@ Trend_min_pmax = 0.6
 Trend_max_dist_ma20_atr = 2.0
 Trend_time_stop_bars = 0
 Trend_time_stop_mfe_atr = 0.0
+Trend_ma_fast_len = 20
+Trend_ma_slow_len = 50
 
 # MeanRevert Strategy Params (example values, adjust as needed)
 MeanRevert_risk_mult = 0.5

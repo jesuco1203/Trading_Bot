@@ -36,19 +36,22 @@ class BaseStrategy:
         if not strat_trades:
             return 0.0, 0.0, 0, 0, 0.0
 
+    def print_summary(self, trades: list):
+        strat_trades = [t for t in trades if t.get("strategy") == self.name]
+        if not strat_trades:
+            return 0.0, 0.0, 0, 0, 0.0
+
         # agrupar por operación (entrada)
         ops = {}
         for t in strat_trades:
-            ets = t.get("entry_ts")
-            if ets is None:  # cordón de seguridad
-                ets = t.get("ts")
-            ops.setdefault(ets, []).append(t)
+            key = t.get("trade_id") or t.get("entry_ts") or t.get("ts")
+            ops.setdefault(key, []).append(t)
 
-        entries = len(ops); wins = 0; total_pnl = 0.0; rrs = []
-        for ets, evs in ops.items():
+        entries = 0; wins = 0; total_pnl = 0.0; rrs = []
+        for key, evs in ops.items():
             evs.sort(key=lambda x: x.get("ts", 0))
-            # rr desde el evento de entrada
-            entry_ev = next((e for e in evs if e.get("event") == "entry"), None)
+            entries += 1
+            entry_ev = next((e for e in evs if e.get("event")=="entry"), None)
             if entry_ev and entry_ev.get("rr") is not None:
                 rrs.append(float(entry_ev["rr"]))
 

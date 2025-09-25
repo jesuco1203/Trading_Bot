@@ -34,6 +34,7 @@ class Trend(BaseStrategy):
         self.arms = 0 # Initialize arms counter
         self.reconf_bar = -1            # ← default
         self.waiting_pullback = False    # ← default
+        self.blocks = {}
 
         # New parameters for BTC 4H Trend
         self.arm_rbody_th = arm_rbody_th
@@ -76,161 +77,119 @@ class Trend(BaseStrategy):
         return max(60, self.arm_timeout)
 
     def signal(self, ctx: dict) -> Signal:
+        tf = ctx.get("tf", "")
+        is_4h = tf == "4h"
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
 
         df = ctx["df"]; feats = ctx["feats"]
 
-        # === en strategies/trend.py, dentro de signal() ===
+        # === PRE-CÁLCULOS SEGUROS ===
         i   = int(ctx.get("i", 0))
-        o   = float(df["open"].iat[-1])
-        h   = float(df["high"].iat[-1])
-        l   = float(df["low"].iat[-1])
-        cl  = float(df["close"].iat[-1])
+        o   = float(df["open"].iat[-1]); h = float(df["high"].iat[-1])
+        l   = float(df["low"].iat[-1]);  cl = float(df["close"].iat[-1])
 
-        atr_abs = float(feats["atr"].iat[-1])                 # ATR en precio
-        adx_now = float(feats["adx"].iat[-1])
-        adx_prev= float(feats["adx"].iat[-2]) if len(feats["adx"])>=2 else adx_now
-        ma_fast = feats.get("ma_fast") or df["close"].rolling(self.ma_fast_len, min_periods=self.ma_fast_len).mean()
-        ma_slow = feats.get("ma_slow") or df["close"].rolling(self.ma_slow_len, min_periods=self.ma_slow_len).mean()
+        atr_abs  = float(feats["atr"].iat[-1])
+        adx_now  = float(feats["adx"].iat[-1])
+        adx_prev = float(feats["adx"].iat[-2]) if len(feats["adx"]) >= 2 else adx_now
 
-        if atr_abs <= 0:
-            return Signal("flat", 0.0, None, None, reason="low_atr")
+        ma_fast = feats.get("ma_fast")
+        ma_slow = feats.get("ma_slow")
+        if ma_fast is None:
+            ma_fast = df["close"].rolling(window=20, min_periods=20).mean()
+        if ma_slow is None:
+            ma_slow = df["close"].rolling(window=50, min_periods=50).mean()
 
-        atr_pct = (atr_abs / cl) if cl > 0 else 0.0
-        atr_p90 = ctx["atr_pct_p90"]
-        if atr_pct > atr_p90:
-            return Signal("flat", 0.0, None, None, reason="atr_vol_too_high")
+        # === DIRECCIÓN Y SEPARACIÓN ===
+        fast = float(ma_fast.iat[-1]); slow = float(ma_slow.iat[-1])
+        sep  = abs(fast - slow) / max(abs(slow), 1e-9)
 
+        # up: fast sube y slow no cae (>= permite mesetas)
+        up       = (ma_fast.iat[-1] > ma_fast.iat[-2]) and (ma_slow.iat[-1] >= ma_slow.iat[-2])
+        # cross_up: cruce alcista entre fast y slow (segunda vía)
+        cross_up = (ma_fast.iat[-2] <= ma_slow.iat[-2]) and (ma_fast.iat[-1] >  ma_slow.iat[-1])
 
+        # === IMPULSO DE BARRA ===
+        rng   = max(h - l, 1e-9)
+        rbody = max(cl - o, 0.0) / rng              # proporción de cuerpo alcista
+        long_wick  = (o - l)/rng >= 0.45            # mecha inferior larga (rechazo)
+        bar_expand = (h - l) >= 1.10 * atr_abs      # rango ≥ 1.1×ATR
 
-        # overextension guard
-        ma20 = ma_fast.iat[-1]
-        dist_ma20_atr = abs(cl - ma20) / atr_abs if atr_abs > 0 else 0
-        if dist_ma20_atr > self.max_dist_ma20_atr:
-            return Signal("flat", 0.0, None, None, reason="overextended_vs_ma20")
-        
-        diff = float(ma_fast.iat[-1] - ma_slow.iat[-1])
-        den  = max(abs(float(ma_slow.iat[-1])), 1e-9)
-        sep  = abs(diff) / den
-        # if sep ~0 por redondeo, imprime y aborta sólo esa barra
-        if sep < 1e-6 or math.isnan(sep):
-            logging.warning(f"TREND-MA-ANOM i={ctx['i']} fast={fast} slow={slow} sep={sep}")
-        logging.debug(f"MA_CALC i={ctx['i']} fast={ma_fast.iat[-1]:.2f} slow={ma_slow.iat[-1]:.2f} diff={diff:.2f} den={den:.2f} sep={sep:.4f}")
+        # === UMBRALES ADAPTATIVOS ===
+        sep_min = 0.004 if adx_now >= 22.0 else 0.006   # antes 0.010/0.006
+        adx_abs_ok  = (adx_now >= 22.0)
+        adx_slope_ok= ((adx_now - adx_prev) >= 0.4 and adx_now >= 18.0)
 
-        up  = (ma_fast.iat[-1] > ma_fast.iat[-2]) and (ma_slow.iat[-1] >= ma_slow.iat[-2])
-        cross_up = (ma_fast.iat[-2] <= ma_slow.iat[-2]) and (ma_fast.iat[-1] > ma_slow.iat[-1])
+        # evidencia de impulso: cualquiera de los 3
+        impulse_ok   = (rbody >= 0.35) or long_wick or bar_expand
+        # dirección de tendencia: (sube y separa) O cruce
+        trend_dir_ok = ((up and sep >= sep_min) or cross_up)
+        # ADX: valor absoluto o pendiente
+        adx_ok       = (adx_abs_ok or adx_slope_ok)
 
-        slope_fast = ma_fast.iat[-1] - ma_fast.iat[-4]
-        slope_slow = ma_slow.iat[-1] - ma_slow.iat[-4]
-        pullback_long = (df["low"].iat[-1] <= ma_fast.iat[-1] * (1.0 + 0.0025)) and (cl > ma_fast.iat[-1])
+        arm_ok = trend_dir_ok and adx_ok and impulse_ok
 
+        if not arm_ok and adx_now >= 30 and bar_expand and sep >= 0.004:
+            arm_ok = True
+            logging.info(f"TREND-GATE i={i} momentum_override=True")
 
-        rng = max(h - l, 1e-9)
-        rbody = max(cl - o, 0.0) / rng if rng > 0 else 0
-        long_wick = (o - l)/rng >= 0.45
-        prev_high = float(df["high"].iat[-2])
+        logging.info(
+            f"TREND-GATE i={i} up={up} sep={sep:.4f} sep_min={sep_min:.4f} cross_up={cross_up} trend_dir_ok={trend_dir_ok} adx_ok={adx_ok} impulse_ok={impulse_ok} arm_ok={arm_ok}"
+        )
 
-        arm_long = ((up and sep >= self.sep_min) or cross_up) \
-                   and (adx_now >= 18) and ((adx_now - adx_prev) >= 0.4) \
-                   and (rbody >= 0.40 or (o - l)/rng >= 0.45)
-
-        # TREND-GATE log
-        if ctx['i'] % 200 == 0 and lab == "trend":
-            logging.info(f"MA fast={ma_fast.iat[-1]:.2f} slow={ma_slow.iat[-1]:.2f} diff={ma_fast.iat[-1]-ma_slow.iat[-1]:.2f}")
-        logging.debug(f"TREND-GATE i={ctx['i']} up={up} sep={sep:.4f} adx={adx_now:.1f} rbody={rbody:.2f} arm_ok={arm_long}")
+        # contadores de motivo (diagnóstico)
+        self.blocks = getattr(self, 'blocks', {})
+        if not arm_ok:
+            if not trend_dir_ok: self.blocks['gate_trend_dir_fail'] = self.blocks.get('gate_trend_dir_fail',0)+1
+            if not adx_ok:       self.blocks['gate_adx_fail']       = self.blocks.get('gate_adx_fail',0)+1
+            if not impulse_ok:   self.blocks['gate_impulse_fail']   = self.blocks.get('gate_impulse_fail',0)+1
+            return Signal("flat", 0.0, None, None, reason="trend_gate_fail")
 
         # Swing low for SL calculation
         swing_low_9 = float(df["low"].iloc[-9:-1].min())
+        prev_high = float(df["high"].iat[-2])
 
         if self.armed_level is None:
-            if arm_long:
-                self.armed_level = (prev_high, "long")
-                self.armed_bars = 0
-                self.retested = False
-                logging.info(f"ARM i={ctx['ts']} bars={self.armed_bars} lvl={self.armed_level[0]:.2f}")
-                return Signal("flat", 0.0, None, None, reason="arm_bpb")
+            if arm_ok:
+                prev_high = float(df["high"].iat[-2])
+                self.armed_level = max(prev_high, cl)  # usa el nivel más cercano al breakout actual
+                self.armed_bars  = 0
+                self.retested    = False
+                self.waiting_pullback = False
+                logging.info(f"ARM i={i} lvl={self.armed_level:.2f}")
+                return Signal("flat", 0.0, None, None, reason="armed")
 
         if self.armed_level is not None:
-            level, side = self.armed_level
-            self.armed_bars += 1
+            RETEST_EPS      = 0.0015   # 0.15%
+            MICRO_PULL_ATR  = 0.05     # 0.05*ATR
+            MICRO_WICK_MIN  = 0.45     # mecha inferior mínima
 
-            if self.armed_bars < 1:
-                return Signal("flat", 0.0, None, None, reason="armed_wait_min1")
+            ma20 = feats.get("ma20", df["close"].rolling(20).mean().iat[-1])
 
-            if self.armed_bars > self.arm_timeout: # Use configurable timeout
-                self.armed_level = None; self.armed_bars = 0; self.retested = False
-                return Signal("flat", 0.0, None, None, reason="disarm_long_timeout")
+            touched_level = (l <= self.armed_level*(1-RETEST_EPS) <= h)
+            touched_ma20  = (abs(ma20 - self.armed_level)/max(self.armed_level,1e-9) <= 0.003) and (l <= ma20 <= h)
+            micro_pull    = (self.armed_level - cl) <= MICRO_PULL_ATR * atr_abs and (cl > o) and ((o - l)/max(h-l,1e-9) >= MICRO_WICK_MIN)
 
-            # Retest condition
-            RETEST_EPS = 0.0025    # 0.25%
-            touched = (l <= level*(1 + (-RETEST_EPS)) <= h) or (abs(l - level)/level <= RETEST_EPS)
-            logging.debug(f"RETEST_DEBUG i={ctx['i']} touched={touched} l={l:.2f} level={level:.2f} eps={RETEST_EPS:.4f} ma_fast={ma_fast.iat[-1]:.2f} close={cl:.2f}")
-            if touched and cl > level and cl > ma_fast.iat[-1]:
-                self.retested = True
+            self.retested = bool(touched_level or touched_ma20 or micro_pull)
+            logging.debug(f"RETEST_DEBUG i={i} lvl={self.armed_level:.2f} eps={RETEST_EPS:.4f} ma20={ma20:.2f} micro_pull={micro_pull} retested={self.retested}")
+            if not self.retested:
+                self.armed_bars += 1
+                if self.armed_bars > 10:  # timeout 10 velas en 30m
+                    self._disarm()
+                    return Signal("flat", 0.0, None, None, reason="retest_timeout")
+                return Signal("flat", 0.0, None, None, reason="waiting_retest")
             
-            TIMEOUT_BARS = 16
-            if self.armed_bars > TIMEOUT_BARS and not touched:
-                self.armed_level = None; self.armed_bars = 0; self.retested = False
-                return Signal("flat", 0.0, None, None, reason="retest_timeout")
+            # ENTER 30m cuando retestea (nivel/MA20 o micro-pullback)
+            if self.retested:
+                swing_low = float(df["low"].iloc[-7:-1].min())
+                sl_pts = max(cl - swing_low, 2.0 * atr_abs)
+                tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
+                partial_tp_pts = 1.0 * atr_abs
+                partial_sl_offset_atr_mult = 0.3
+                rr = tp_pts / max(sl_pts, 1e-9)
 
-            # Reconfirm condition
-            RECONF_CLOSE_BPS = 30   # 0.30% por cierre
-            RECONF_HIGH_BPS  = 8    # 0.08% por ruptura de máximo previo
-
-            reconf_close = cl > level * (1 + RECONF_CLOSE_BPS/10000.0)
-            reconf_high  = h  > prev_high * (1 + RECONF_HIGH_BPS/10000.0)
-            reconf = reconf_close or reconf_high
-            logging.debug(f"RECONF_DEBUG i={ctx['i']} reconf={reconf} close={cl:.2f} level={level:.2f} reconf_close={reconf_close} h={h:.2f} prev_high={prev_high:.2f} reconf_high={reconf_high}")
-
-            lose_struct = not (sep >= 0.8 * self.sep_min and slope_fast > 0 and slope_slow >= 0)
-            if lose_struct:
                 self._disarm()
-                return Signal("flat", 0.0, None, None, reason="disarm_long_losestruct")
-
-            # Guardia de vela extendida
-            tr = h - l
-            if (tr >= 1.3 * atr_abs) or (rbody >= 0.85):
-                return Signal("flat", 0.0, None, None, reason="reconf_extended_bar")
-
-            if self.retested and (reconf_close or reconf_high):
-                # SHORTS OFF check
-                if not self.allow_shorts and side == "short":
-                    self._disarm()
-                    return Signal("flat", 0.0, None, None, reason="shorts_off")
-                self.waiting_pullback = True
-                self.reconf_bar = ctx['i']
-                return Signal("flat", 0.0, None, None, reason="waiting_pullback")
-
-            if self.waiting_pullback:
-                PULLBACK_ATR = 0.20   # retest del nivel tras el breakout
-                PULLBACK_TIMEOUT = 6      # barras para esperar el retest tras reconfirm
-
-                pull = level + PULLBACK_ATR * atr_abs # level + 0.2*ATR
-                touched_pull = (l <= pull <= h)
-                bullish_reject = (cl > o) and ((o - l)/(h - l + 1e-9) >= 0.45)
-
-                if touched_pull and bullish_reject:
-                    # SL calculation
-                    swing_low = float(df["low"].iloc[-9:-1].min())
-                    sl_pts = max(close - (swing_low - 0.6 * atr_abs), 3.0 * atr_abs)     # ↑ SL para 4H
-                    
-                    # TP calculation
-                    tp_pts = max(1.8 * sl_pts, 3.0 * atr_abs)
-                    
-                    # Partial TP and SL offset
-                    partial_tp_pts = 1.2 * atr_abs
-                    partial_sl_offset_atr_mult = 0.3
-
-                    self._disarm()
-                    rr = tp_pts / sl_pts if sl_pts > 0 else 0.0
-                    return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult, reason="bo_retest_enter", rr=rr)
-
-                # timeout del pullback
-                if ctx['i'] - self.reconf_bar >= PULLBACK_TIMEOUT:
-                    self._disarm()
-                    return Signal("flat", 0.0, None, None, reason="pullback_timeout")
-
-            return Signal("flat", 0.0, None, None, reason="waiting_retest_or_reconf")
+                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult,
+                              reason="pullback_reject_enter", rr=rr)
 
         return Signal("flat", 0.0, None, None, reason="no_setup")

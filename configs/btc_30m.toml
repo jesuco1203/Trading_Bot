@@ -24,7 +24,7 @@ persistence = 2 # For 30m
 
 [strategy_mapping]
 trend = ["Trend"]
-mr    = []          # ← OFF temporal
+mr    = ["MeanRevert"]
 high_vol = []
 
 [strategy_params]
@@ -72,11 +72,11 @@ MeanRevert_tp_mult_sl = 1.5
 MeanRevert_tp_mult_atr = 1.0
 MeanRevert_partial_tp_atr_mult = 0.5
 MeanRevert_partial_sl_offset_atr_mult = 0.2
-MeanRevert_local_cooldown_duration = 5
-MeanRevert_gate_adx_max = 25.0
+MeanRevert_local_cooldown_duration = 12
+MeanRevert_gate_adx_max = 22
 MeanRevert_time_stop_bars = 0
 MeanRevert_time_stop_mfe_atr = 0.0
-MeanRevert_min_dist_sma_atr = 1.1
+MeanRevert_min_dist_sma_atr = 1.0
 MeanRevert_rr_min = 1.4
 MeanRevert_partial_atr = 0.8
 MeanRevert_partial_sl_offset_atr = 0.1

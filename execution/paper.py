@@ -90,7 +90,6 @@ class PaperBroker:
         self.pos.partial_sl_offset_atr_mult = partial_sl_offset_atr_mult
         self.pos.trail_trigger_atr_mult = trail_trigger_atr_mult
         self.pos.trail_sl_offset_atr_mult = trail_sl_offset_atr_mult
-        self.pos.rr = rr
         self.pos.time_stop_bars = time_stop_bars
         self.pos.time_stop_mfe_atr = time_stop_mfe_atr
         self.pos.mae_atr = mae_atr

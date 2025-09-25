@@ -189,7 +189,8 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
                 "equity": equity, "score_multiTF": float(row.get("score_multiTF", 0.0)),
                 "atr_pct_p85": atr_pct_85_percentile, "atr_pct_70": atr_pct_70_percentile,
                 "regime_label": lab, "pmax": pmax,
-                "atr_pct_p90": atr_pct_85_percentile # Add atr_pct_p90 to context
+                "atr_pct_p90": atr_pct_85_percentile, # Add atr_pct_p90 to context
+                "tf": base_tf
             }
             sig = s.signal(context)
             if sig and sig.side != "flat":
@@ -230,6 +231,8 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         logging.info(f"--- {all_strategies['Trend'].name} Summary ---")
         logging.info(f"Entries: {trend_entries} | Wins(TP): {trend_wins} | Hit: {trend_hit_rate:.0f}% | RR Avg: {trend_rr_avg:.2f} | PnL: {trend_pnl:.2f}")
         logging.info(f"Avg Bars Open: {trend_avg_bars_open:.0f} | MFE ATR Avg: {trend_mfe_atr_avg:.2f} | MAE ATR Avg: {trend_mae_atr_avg:.2f}")
+        if hasattr(all_strategies["Trend"], "blocks") and all_strategies["Trend"].blocks:
+            logging.info(f"TREND Gate Blocks: {all_strategies['Trend'].blocks}")
 
     mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate, mr_avg_bars_open, mr_mfe_atr_avg, mr_mae_atr_avg = (0.0, 0.0, 0, 0, 0.0, 0, 0.0, 0.0)
     mr_block_summary = {}

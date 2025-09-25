@@ -1,44 +1,48 @@
-# Bot de Trading para OKX con Estrategia de Vela Envolvente
+# Bot de Trading AI para OKX
 
-Este es un bot de trading automatizado en Python que implementa una estrategia intradía basada en velas envolventes, RSI, volumen y otros filtros para operar en el exchange OKX.
+Este es un bot de trading algorítmico avanzado en Python que utiliza un enfoque basado en Inteligencia Artificial para operar en el exchange OKX. El sistema identifica dinámicamente el régimen de mercado (tendencia, rango, alta volatilidad) mediante un **Modelo Oculto de Markov (HMM)** y activa las estrategias de trading más adecuadas para las condiciones actuales.
 
 **🚨 ADVERTENCIA: USAR BAJO SU PROPIO RIESGO 🚨**
-El trading de criptomonedas es altamente riesgoso. Este software se proporciona "tal cual", sin garantías. El autor no se hace responsable de ninguna pérdida financiera. Se recomienda encarecidamente probar exhaustivamente en modo **Paper Trading** (`"paper_trading": true` en `config.json`) antes de arriesgar capital real.
+El trading de criptomonedas es altamente riesgoso. Este software se proporciona "tal cual", sin garantías. El autor no se hace responsable de ninguna pérdida financiera. Se recomienda encarecidamente probar exhaustivamente en modo de backtesting y paper trading antes de arriesgar capital real.
 
-## Características
+## Arquitectura y Características
 
--   **Estrategia Configurable**: Basada en velas envolventes, RSI, SMA, Volumen y Soportes/Resistencias.
--   **Gestión de Riesgo Integrada**: Stop-Loss basado en ATR y Take-Profit con ratio Riesgo/Recompensa.
--   **Cálculo de Tamaño de Posición**: Ajusta el tamaño de la operación basado en un porcentaje de riesgo del capital total.
--   **Conexión Segura a OKX**: Utiliza `ccxt` para una interacción robusta con la API.
--   **Modo de Simulación**: Incluye un modo de *paper trading* para probar la estrategia sin arriesgar fondos.
--   **Automatización**: Se sincroniza automáticamente con el cierre de las velas del timeframe configurado.
--   **Logging Detallado**: Registra todas las acciones, decisiones y errores en `trading_bot.log`.
--   **Estructura Modular**: El código está separado en módulos lógicos (cliente, estrategia, principal) para facilitar el mantenimiento y la expansión.
+-   **Selección de Estrategias por IA**: Utiliza un Modelo Oculto de Markov (HMM) para analizar características del mercado (`ret`, `vol`, `rng_pct`) y determinar el régimen actual.
+-   **Multi-Estrategia Dinámica**: Activa y desactiva estrategias automáticamente según el régimen detectado por el HMM.
+    -   **`Trend`**: Estrategia de seguimiento de tendencia basada en cruces de medias móviles y filtros de ADX.
+    -   **`MeanRevert`**: Estrategia de reversión a la media que opera en mercados de rango.
+    -   **`VolBreakout`**: (Placeholder) Estrategia para operar en rupturas de volatilidad.
+-   **Configuración por Perfiles**: Gestiona todos los parámetros a través de archivos de configuración `.toml` dedicados para cada par/timeframe (ej. `configs/btc_30m.toml`), permitiendo una experimentación y ajuste flexibles.
+-   **Backtesting Robusto**: El script `main.py` funciona como un motor de backtesting que permite la validación de estrategias sobre datos históricos.
+-   **Gestión de Riesgo Avanzada**:
+    -   Cálculo de tamaño de posición basado en ATR.
+    -   Ajuste de riesgo dinámico según la confianza del modelo HMM y la fuerza de la señal.
+    -   Soporte para Stop-Loss, Take-Profit, salidas parciales y trailing stops.
+-   **Simulación de Ejecución (Paper Broker)**: Un broker simulado (`execution/paper.py`) que modela comisiones, deslizamiento (slippage) y exporta un registro detallado de todas las operaciones a un archivo CSV.
+-   **Adquisición de Datos**: Incluye un script (`scripts/okx_backfill.py`) para descargar y almacenar datos históricos de OKX en formato Parquet, optimizado para lecturas rápidas.
+-   **Estructura Modular**: El código está organizado en módulos claros y cohesivos (`data`, `features`, `regime`, `strategies`, `selector`, `risk`, `execution`, `monitoring`).
 
 ## Requisitos Previos
 
 1.  **Python 3.8 o superior.**
-2.  Una cuenta en **OKX**.
-3.  **Credenciales API** de OKX (API Key, Secret Key, Passphrase).
-    -   Al crear la API, asegúrate de darle permisos de **Trading**.
-    -   Para el modo de prueba (Paper Trading), obtén las credenciales desde la sección "Demo Trading" de OKX.
+2.  Un entorno virtual de Python (recomendado).
+3.  Una cuenta en **OKX** (para trading real o para obtener datos).
 
 ## Instalación
 
 1.  **Clona este repositorio:**
     ```bash
     git clone <url-del-repositorio>
-    cd <nombre-del-repositorio>
+    cd Trading_Bot
     ```
 
-2.  **Crea y activa un entorno virtual (recomendado):**
+2.  **Crea y activa un entorno virtual:**
     ```bash
     python -m venv venv
-    # En Windows
-    venv\Scripts\activate
     # En macOS/Linux
     source venv/bin/activate
+    # En Windows
+    venv\Scripts\activate
     ```
 
 3.  **Instala las dependencias:**
@@ -48,56 +52,45 @@ El trading de criptomonedas es altamente riesgoso. Este software se proporciona 
 
 ## Configuración
 
-1.  **Renombra `config.example.json` a `config.json`** si es necesario.
-2.  **Abre el archivo `config.json` y edita los siguientes campos:**
+El sistema ya no usa un único `config.json`. Toda la configuración se gestiona a través de perfiles `.toml` en el directorio `configs/`.
 
-    -   `apiKey`, `secret`, `password`: Introduce tus credenciales API de OKX.
-    -   `symbol`: El par a operar (ej. `BTC/USDT`). Asegúrate que sea un contrato de SWAP si operas derivados.
-    -   `timeframe`: El marco de tiempo (ej. `30m`, `1h`, `4h`).
-    -   `position_risk_percentage`: El porcentaje de tu capital a arriesgar por operación (ej. `1.0` para 1%).
-    -   `paper_trading`:
-        -   `true`: **Modo simulación**. El bot registrará las operaciones pero no enviará órdenes reales al mercado. **Usa esto para probar.**
-        -   `false`: **Modo real**. El bot ejecutará operaciones con fondos reales.
-    -   **`strategy_params`**: Ajusta los parámetros de los indicadores según tus preferencias.
+1.  **Datos Históricos**: Antes de ejecutar un backtest, necesitas descargar los datos. Usa el script `okx_backfill.py`.
+    ```bash
+    # Ejemplo para descargar 12 meses de datos para BTC y ETH en varios timeframes
+    python scripts/okx_backfill.py --root data/okx --symbols "BTC-USDT-SWAP,ETH-USDT-SWAP" --months 12
+    ```
 
-## Ejecución
+2.  **Perfil de Backtesting**: Abre y modifica un perfil existente en `configs/`, por ejemplo, `configs/btc_30m.toml`.
+    -   **`[market]`**: Define el símbolo (`symbols`) y el timeframe (`timeframes`) para el backtest.
+    -   **`[risk]`**: Ajusta el capital inicial (`starting_equity`) y el riesgo por operación (`risk_per_trade_pct`).
+    -   **`[selector]`**: Configura los umbrales de probabilidad (`enter_th`, `exit_th`) para que el HMM active/desactive estrategias.
+    -   **`[strategy_mapping]`**: **Aquí decides qué estrategia se ejecuta en cada régimen de mercado**. Para activar una estrategia, añade su nombre (ej. `"Trend"`, `"MeanRevert"`) a la lista del régimen correspondiente (`trend`, `mr`, `high_vol`). Para desactivarla, deja la lista vacía.
+        ```toml
+        [strategy_mapping]
+        trend = ["Trend"]  # <-- La estrategia Trend se activará en régimen de tendencia
+        mr    = []         # <-- La estrategia MeanRevert está desactivada
+        high_vol = []
+        ```
+    -   **`[strategy_params]`**: Ajusta los parámetros específicos de cada estrategia. Cada parámetro está prefijado con el nombre de la estrategia (ej. `Trend_sl_mult_atr`).
 
-Una vez configurado, simplemente ejecuta el script principal desde tu terminal:
+## Ejecución de Backtesting
+
+Para ejecutar un backtest, utiliza `main.py` y especifica el archivo de configuración del perfil que deseas probar.
 
 ```bash
-python main.py
+# Ejemplo de ejecución de un backtest para el perfil de BTC en 30m
+python main.py --config configs/btc_30m.toml --limit-bars 2000
 ```
 
-El bot comenzará a funcionar. Verás mensajes en la consola y toda la actividad quedará registrada en el archivo `trading_bot.log`.
+-   `--config`: Ruta al archivo de configuración del perfil (obligatorio).
+-   `--limit-bars`: Número de velas (barras) históricas que se usarán en el backtest.
 
-Para detener el bot de forma segura, presiona `Ctrl + C` en la terminal.
+El script ejecutará el backtest, mostrando logs de la actividad del selector de régimen y las estrategias. Al finalizar, imprimirá un resumen de rendimiento y exportará un archivo `trades_*.csv` con el detalle de todas las operaciones simuladas.
 
-## Ejemplo de Log (`trading_bot.log`)
+## Archivos Desactualizados
 
-Un archivo de log típico se vería así:
-
-```log
-2025-08-20 11:30:00,123 - INFO - Iniciando el bot de trading...
-2025-08-20 11:30:00,456 - INFO - Modo Paper Trading (Sandbox) activado.
-2025-08-20 11:30:00,457 - INFO - Próxima ejecución en 1799.54 segundos a las 2025-08-20 12:00:00 UTC.
-2025-08-20 12:00:05,111 - INFO - Comprobando nueva señal...
-2025-08-20 12:00:05,112 - INFO - Obteniendo datos OHLCV para BTC/USDT en timeframe 30m...
-2025-08-20 12:00:06,223 - INFO - Señal generada: HOLD
-2025-08-20 12:00:06,224 - INFO - Próxima ejecución en 1799.89 segundos a las 2025-08-20 12:30:00 UTC.
-...
-2025-08-20 14:30:05,333 - INFO - Comprobando nueva señal...
-2025-08-20 14:30:05,334 - INFO - Obteniendo datos OHLCV para BTC/USDT en timeframe 30m...
-2025-08-20 14:30:06,444 - INFO - Señal generada: BUY
-2025-08-20 14:30:06,555 - INFO - Calculando orden: Balance=1000.00 USDT, Riesgo=10.00 USDT, Tamaño Posición=0.0833 BTC/USDT
-2025-08-20 14:30:06,666 - INFO - Intentando colocar orden BUY para BTC/USDT...
-2025-08-20 14:30:06,667 - INFO - Cantidad: 0.0833, Precio Entrada Aprox: 71500.0, SL: 71380.0, TP: 71740.0
-2025-08-20 14:30:06,668 - WARNING - MODO SIMULACIÓN: La orden no se ejecutará en el mercado real.
-2025-08-20 14:30:06,669 - INFO - Posición abierta. El bot no buscará nuevas señales hasta ser reiniciado.
-```
-
-## Próximos Pasos y Mejoras Potenciales
-
--   **Detección de Divergencias RSI**: Implementar una función para detectar divergencias alcistas/bajistas, añadiendo un filtro más a la estrategia.
--   **Backtesting**: Crear un script separado (`backtest.py`) que utilice la misma clase `TradingStrategy` para evaluar su rendimiento con datos históricos.
--   **Gestión de Estado Avanzada**: En lugar de una simple variable `position_open`, consultar activamente a la API de OKX (`fetch_positions`) para saber si hay posiciones abiertas.
--   **Notificaciones**: Integrar un módulo para enviar alertas vía Telegram o email cuando se abre una operación o ocurre un error.
+Los siguientes archivos corresponden a una versión anterior del bot y ya no son utilizados por el flujo principal de `main.py`. Se conservan como referencia o para posibles usos futuros:
+- `config.json`
+- `strategy.py`
+- `backtest.py`
+- `okx_client.py` (el cliente CCXT en la raíz)

@@ -126,6 +126,8 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
     strategies = all_strategies.values()
     tick_value = config['market']['tick_value']
     p_prev = {label: 1.0 / hmm_model.n_states for label in hmm_model.labels}
+    shared_context = {}
+    state = {"enabled": {"Trend": True, "MeanRevert": True}}
 
     for i in range(warmup_period, len(df_base)):
         current_dt = df_base.index[i]
@@ -148,7 +150,19 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         # MTM and Position Update
         pnl_bar = broker.mark_to_market(float(row["close"]), ts=current_dt, high=float(row["high"]), low=float(row["low"]))
         equity += pnl_bar
-        metrics.update(current_dt, equity, broker.exposure())
+        strategy_name = broker.pos.strategy_name if broker.pos.side != 0 else None
+        metrics.update(current_dt, equity, broker.exposure(), pnl=pnl_bar, strategy_name=strategy_name)
+
+        # Per-strategy Kill Switches
+        for strat_name in list(all_strategies.keys()):
+            if not state["enabled"].get(strat_name, True):
+                continue
+            if metrics.drawdown_pct(strat_name) <= -config['risk'].get(f'max_dd_pct_{strat_name.lower()}', 1.0):
+                state["enabled"][strat_name] = False
+                logging.warning(f"KILL_SWITCH[{strat_name}]: DD limit reached -> DISABLED")
+            if metrics.consecutive_losses(strat_name) >= config['risk'].get(f'max_consecutive_losses_{strat_name.lower()}', 100):
+                state["enabled"][strat_name] = False
+                logging.warning(f"KILL_SWITCH[{strat_name}]: consecutive losses -> DISABLED")
 
         # Session Kill Switches
         if metrics.drawdown_pct() <= config['risk'].get('max_dd_pct_session', -0.04):   # ej. -4%
@@ -179,6 +193,8 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
 
         signals = []
         for s in strategies:
+            if not state["enabled"].get(s.name, True):
+                continue
             if s.name not in active_names:
                 continue
             if s.name == "Trend" and consecutive_trend_count < 2:
@@ -190,7 +206,8 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
                 "atr_pct_p85": atr_pct_85_percentile, "atr_pct_70": atr_pct_70_percentile,
                 "regime_label": lab, "pmax": pmax,
                 "atr_pct_p90": atr_pct_85_percentile, # Add atr_pct_p90 to context
-                "tf": base_tf
+                "tf": base_tf,
+                "shared_context": shared_context
             }
             sig = s.signal(context)
             if sig and sig.side != "flat":

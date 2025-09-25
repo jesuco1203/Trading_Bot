@@ -82,6 +82,8 @@ class Trend(BaseStrategy):
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
 
+        ctx['shared_context']['trend_armed'] = self.armed_level is not None
+
         df = ctx["df"]; feats = ctx["feats"]
 
         # === PRE-CÁLCULOS SEGUROS ===
@@ -133,9 +135,8 @@ class Trend(BaseStrategy):
             arm_ok = True
             logging.info(f"TREND-GATE i={i} momentum_override=True")
 
-        logging.info(
-            f"TREND-GATE i={i} up={up} sep={sep:.4f} sep_min={sep_min:.4f} cross_up={cross_up} trend_dir_ok={trend_dir_ok} adx_ok={adx_ok} impulse_ok={impulse_ok} arm_ok={arm_ok}"
-        )
+        logging.info(f"TREND-GATE i={i} adx={adx_now:.1f} up={up} sep={sep:.4f} "
+             f"trend_dir_ok={trend_dir_ok} adx_ok={adx_ok} impulse_ok={impulse_ok} arm_ok={arm_ok}")
 
         # contadores de motivo (diagnóstico)
         self.blocks = getattr(self, 'blocks', {})
@@ -144,10 +145,6 @@ class Trend(BaseStrategy):
             if not adx_ok:       self.blocks['gate_adx_fail']       = self.blocks.get('gate_adx_fail',0)+1
             if not impulse_ok:   self.blocks['gate_impulse_fail']   = self.blocks.get('gate_impulse_fail',0)+1
             return Signal("flat", 0.0, None, None, reason="trend_gate_fail")
-
-        # Swing low for SL calculation
-        swing_low_9 = float(df["low"].iloc[-9:-1].min())
-        prev_high = float(df["high"].iat[-2])
 
         if self.armed_level is None:
             if arm_ok:
@@ -161,26 +158,29 @@ class Trend(BaseStrategy):
 
         if self.armed_level is not None:
             RETEST_EPS      = 0.0015   # 0.15%
-            MICRO_PULL_ATR  = 0.05     # 0.05*ATR
+            MICRO_PULL_ATR  = 0.07     # 0.07*ATR
             MICRO_WICK_MIN  = 0.45     # mecha inferior mínima
 
             ma20 = feats.get("ma20", df["close"].rolling(20).mean().iat[-1])
 
             touched_level = (l <= self.armed_level*(1-RETEST_EPS) <= h)
             touched_ma20  = (abs(ma20 - self.armed_level)/max(self.armed_level,1e-9) <= 0.003) and (l <= ma20 <= h)
-            micro_pull    = (self.armed_level - cl) <= MICRO_PULL_ATR * atr_abs and (cl > o) and ((o - l)/max(h-l,1e-9) >= MICRO_WICK_MIN)
+            micro_pull    = ((self.armed_level - cl) <= MICRO_PULL_ATR*atr_abs) and (cl > o) and ((o - l)/max(h-l,1e-9) >= MICRO_WICK_MIN)
 
             self.retested = bool(touched_level or touched_ma20 or micro_pull)
             logging.debug(f"RETEST_DEBUG i={i} lvl={self.armed_level:.2f} eps={RETEST_EPS:.4f} ma20={ma20:.2f} micro_pull={micro_pull} retested={self.retested}")
             if not self.retested:
                 self.armed_bars += 1
-                if self.armed_bars > 10:  # timeout 10 velas en 30m
+                if self.armed_bars > 12:  # timeout 12 velas en 30m
                     self._disarm()
                     return Signal("flat", 0.0, None, None, reason="retest_timeout")
                 return Signal("flat", 0.0, None, None, reason="waiting_retest")
             
             # ENTER 30m cuando retestea (nivel/MA20 o micro-pullback)
             if self.retested:
+                if (h - l) >= 1.3 * atr_abs or (max(cl - o, 0.0) / max(h - l, 1e-9)) >= 0.85:
+                    return Signal("flat", 0.0, None, None, reason="extended_bar_guard")
+
                 swing_low = float(df["low"].iloc[-7:-1].min())
                 sl_pts = max(cl - swing_low, 2.0 * atr_abs)
                 tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)

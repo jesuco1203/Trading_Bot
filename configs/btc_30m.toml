@@ -9,6 +9,12 @@ root = "data/okx"
 [risk]
 starting_equity = 10000.0
 risk_per_trade_pct = 0.01
+max_dd_pct_session = -0.04
+max_consecutive_losses = 3
+max_dd_pct_trend = 0.05
+max_dd_pct_mr = 0.02
+max_consecutive_losses_trend = 2
+max_consecutive_losses_mr = 2
 
 [costs]
 commission_rate = 0.0005 # 0.05%
@@ -29,7 +35,7 @@ high_vol = []
 
 [strategy_params]
 Trend_risk_mult = 1.0
-MR_risk_mult    = 0.4
+MR_risk_mult    = 0.30
 
 # Trend Strategy Params (example values, adjust as needed)
 Trend_arm_rbody_th = 0.6
@@ -72,10 +78,10 @@ MeanRevert_tp_mult_sl = 1.5
 MeanRevert_tp_mult_atr = 1.0
 MeanRevert_partial_tp_atr_mult = 0.5
 MeanRevert_partial_sl_offset_atr_mult = 0.2
-MeanRevert_local_cooldown_duration = 12
+MeanRevert_local_cooldown_duration = 14
 MeanRevert_gate_adx_max = 22
-MeanRevert_time_stop_bars = 0
-MeanRevert_time_stop_mfe_atr = 0.0
+MeanRevert_time_stop_bars = 6
+MeanRevert_time_stop_mfe_atr = 0.5
 MeanRevert_min_dist_sma_atr = 1.0
 MeanRevert_rr_min = 1.4
 MeanRevert_partial_atr = 0.8

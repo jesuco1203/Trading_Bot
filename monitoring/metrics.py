@@ -4,12 +4,16 @@ class RollingMetrics:
     def __init__(self, window=1000):
         self.window = window
         self.equity = []
-        self.initial_equity = None # To store initial equity for drawdown_pct
-        self.peak_equity = -np.inf # Track peak equity for drawdown calculation
+        self.initial_equity = None
+        self.peak_equity = -np.inf
         self.consecutive_loss_count = 0
         self.last_pnl_positive = True
 
-    def update(self, ts, equity, exposure):
+        self.peak_equity_strategy = {}
+        self.consecutive_losses_strategy = {}
+        self.last_pnl_positive_strategy = {}
+
+    def update(self, ts, equity, exposure, pnl=0.0, strategy_name=None):
         if self.initial_equity is None:
             self.initial_equity = float(equity)
         self.equity.append(float(equity))
@@ -19,28 +23,55 @@ class RollingMetrics:
         current_equity = float(equity)
         self.peak_equity = max(self.peak_equity, current_equity)
 
-        # Update consecutive losses
-        if len(self.equity) > 1:
-            current_pnl = self.equity[-1] - self.equity[-2]
-            if current_pnl < 0:
+        if pnl != 0:
+            if pnl < 0:
                 if self.last_pnl_positive:
                     self.consecutive_loss_count = 1
                 else:
                     self.consecutive_loss_count += 1
                 self.last_pnl_positive = False
-            elif current_pnl > 0:
+            else:
                 self.consecutive_loss_count = 0
                 self.last_pnl_positive = True
 
-    def drawdown_pct(self):
-        if not self.equity or self.peak_equity == -np.inf or self.peak_equity == 0:
-            return 0.0
-        current_equity = self.equity[-1]
-        drawdown = self.peak_equity - current_equity
-        return - (drawdown / self.peak_equity)
+        if strategy_name:
+            if strategy_name not in self.peak_equity_strategy:
+                self.peak_equity_strategy[strategy_name] = -np.inf
+                self.consecutive_losses_strategy[strategy_name] = 0
+                self.last_pnl_positive_strategy[strategy_name] = True
 
-    def consecutive_losses(self):
-        return self.consecutive_loss_count
+            self.peak_equity_strategy[strategy_name] = max(self.peak_equity_strategy[strategy_name], current_equity)
+
+            if pnl != 0:
+                if pnl < 0:
+                    if self.last_pnl_positive_strategy[strategy_name]:
+                        self.consecutive_losses_strategy[strategy_name] = 1
+                    else:
+                        self.consecutive_losses_strategy[strategy_name] += 1
+                    self.last_pnl_positive_strategy[strategy_name] = False
+                else:
+                    self.consecutive_losses_strategy[strategy_name] = 0
+                    self.last_pnl_positive_strategy[strategy_name] = True
+
+    def drawdown_pct(self, strategy_name=None):
+        if strategy_name:
+            if strategy_name not in self.peak_equity_strategy or self.peak_equity_strategy[strategy_name] == -np.inf or self.peak_equity_strategy[strategy_name] == 0:
+                return 0.0
+            current_equity = self.equity[-1]
+            drawdown = self.peak_equity_strategy[strategy_name] - current_equity
+            return - (drawdown / self.peak_equity_strategy[strategy_name])
+        else:
+            if not self.equity or self.peak_equity == -np.inf or self.peak_equity == 0:
+                return 0.0
+            current_equity = self.equity[-1]
+            drawdown = self.peak_equity - current_equity
+            return - (drawdown / self.peak_equity)
+
+    def consecutive_losses(self, strategy_name=None):
+        if strategy_name:
+            return self.consecutive_losses_strategy.get(strategy_name, 0)
+        else:
+            return self.consecutive_loss_count
 
     def summary(self):
         r = np.diff(self.equity) if len(self.equity)>1 else np.array([0.0])

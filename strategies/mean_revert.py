@@ -52,6 +52,9 @@ class MeanRevert(BaseStrategy):
         return super().print_summary(trades)
 
     def signal(self, ctx: Dict[str, Any]) -> Signal | None:
+        if ctx.get("shared_context", {}).get("trend_armed", False):
+            return Signal("flat", 0.0, None, None, reason="trend_armed_mutex")
+
         lab = ctx.get("regime_label", "")
         pmax = float(ctx.get("pmax", 0.0))
         

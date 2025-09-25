@@ -1,3 +1,4 @@
 ts,symbol,tf,strategy,side,entry,exit,exit_reason,partial,pnl,rr,bars_open,mfe_atr,mae_atr
-1976,,,Trend,,,,,False,0.0,1.8,,,
-1982,,,Trend,,,,time_stop,False,-4069.0266950586674,,,,
+691,,,MeanRevert,,,,,False,0.0,1.5000000000000002,,,
+692,,,MeanRevert,,,,,True,1177.313156479718,,,,
+692,,,MeanRevert,,,,sl,False,-123.59856227029746,,1.0,1.4448,0.3919

@@ -1,4 +1,4 @@
 ts,symbol,tf,strategy,side,entry,exit,exit_reason,partial,pnl,rr,bars_open,mfe_atr,mae_atr
 191,,,MeanRevert,,,,,False,0.0,1.5000000000000002,,,
 192,,,MeanRevert,,,,,True,1177.313156479718,,,,
-192,,,MeanRevert,,,,sl,False,-123.59856227029746,,,,
+192,,,MeanRevert,,,,sl,False,-123.59856227029746,,1.0,1.4448,0.3919

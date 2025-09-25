@@ -155,22 +155,22 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
 
         # Per-strategy Kill Switches
         for strat_name in list(all_strategies.keys()):
-            if not state["enabled"].get(strat_name, True):
-                continue
-            if metrics.drawdown_pct(strat_name) <= -config['risk'].get(f'max_dd_pct_{strat_name.lower()}', 1.0):
-                state["enabled"][strat_name] = False
-                logging.warning(f"KILL_SWITCH[{strat_name}]: DD limit reached -> DISABLED")
-            if metrics.consecutive_losses(strat_name) >= config['risk'].get(f'max_consecutive_losses_{strat_name.lower()}', 100):
-                state["enabled"][strat_name] = False
-                logging.warning(f"KILL_SWITCH[{strat_name}]: consecutive losses -> DISABLED")
+            if state["enabled"].get(strat_name, False):
+                if metrics.drawdown_pct(strat_name) <= -config['risk'].get(f'max_dd_pct_{strat_name.lower()}', 1.0):
+                    state["enabled"][strat_name] = False
+                    logging.warning(f"KILL_SWITCH[{strat_name}]: DD limit reached -> DISABLED")
+                if metrics.consecutive_losses(strat_name) >= config['risk'].get(f'max_consecutive_losses_{strat_name.lower()}', 100):
+                    state["enabled"][strat_name] = False
+                    logging.warning(f"KILL_SWITCH[{strat_name}]: consecutive losses -> DISABLED")
 
         # Session Kill Switches
-        if metrics.drawdown_pct() <= config['risk'].get('max_dd_pct_session', -0.04):   # ej. -4%
-            logging.warning("KILL_SWITCH: session DD limit reached")
-            break
-        if metrics.consecutive_losses() >= config['risk'].get('max_consecutive_losses', 3):  # ej. 3
-            logging.warning("KILL_SWITCH: too many consecutive losses")
-            break
+        if any(state["enabled"].values()):
+            if metrics.drawdown_pct() <= -config['risk'].get('max_dd_pct_session', 0.06):
+                logging.warning("KILL_SWITCH[GLOBAL]: session DD -> STOP")
+                break
+            if metrics.consecutive_losses() >= config['risk'].get('max_consecutive_losses', 3):
+                logging.warning("KILL_SWITCH: too many consecutive losses")
+                break
 
         if prev_exposure != 0 and broker.exposure() == 0:
             last_exit_i = i

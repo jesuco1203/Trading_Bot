@@ -9,7 +9,7 @@ root = "data/okx"
 [risk]
 starting_equity = 10000.0
 risk_per_trade_pct = 0.01
-max_dd_pct_session = -0.04
+max_dd_pct_session = 0.06
 max_consecutive_losses = 3
 max_dd_pct_trend = 0.05
 max_dd_pct_mr = 0.02
@@ -34,7 +34,7 @@ mr    = ["MeanRevert"]
 high_vol = []
 
 [strategy_params]
-Trend_risk_mult = 1.0
+Trend_risk_mult = 0.6
 MR_risk_mult    = 0.30
 
 # Trend Strategy Params (example values, adjust as needed)

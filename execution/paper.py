@@ -113,14 +113,13 @@ class PaperBroker:
         self.pos.bars_open += 1
 
         # Time-stop logic for Trend
-        if self.pos.strategy_name == "Trend" and self.pos.bars_open >= 6 and self.pos.mfe_atr < 0.6:
-            exit_px = price
-            fee = (abs(self.pos.qty) * exit_px) * self.comm
-            pnl = (exit_px - self.pos.entry) * self.pos.side * self.pos.qty - fee
-            self.capital += pnl
+        if self.pos.strategy_name == "Trend" and self.pos.bars_open >= 8 and self.pos.mfe_atr < 0.5:
             self.trades.append({"ts": ts, "trade_id": self.pos.trade_id, "entry_ts": self.pos.entry_ts,
                                 "strategy": self.pos.strategy_name, "partial": False,
-                                "pnl": pnl, "exit_reason": "time_stop", "event": "close"})
+                                "pnl": pnl, "exit_reason": "time_stop", "event": "close",
+                                "bars_open": self.pos.bars_open,
+                                "mfe_atr": round(self.pos.mfe_atr, 4),
+                                "mae_atr": round(self.pos.mae_atr, 4)})
             logging.info(f"EXIT reason=time_stop strategy={self.pos.strategy_name} bars_open={self.pos.bars_open} mfe_atr={self.pos.mfe_atr:.2f}")
             self.pos = Position()
             self.exits_count += 1
@@ -135,7 +134,10 @@ class PaperBroker:
             self.capital += pnl
             self.trades.append({"ts": ts, "trade_id": self.pos.trade_id, "entry_ts": self.pos.entry_ts,
                                 "strategy": self.pos.strategy_name, "partial": False,
-                                "pnl": pnl, "exit_reason": "time_stop", "event": "close"})
+                                "pnl": pnl, "exit_reason": "time_stop", "event": "close",
+                                "bars_open": self.pos.bars_open,
+                                "mfe_atr": round(self.pos.mfe_atr, 4),
+                                "mae_atr": round(self.pos.mae_atr, 4)})
             logging.info(f"EXIT reason=time_stop strategy={self.pos.strategy_name} bars_open={self.pos.bars_open} mfe_atr={self.pos.mfe_atr:.2f}")
             self.pos = Position()
             self.exits_count += 1
@@ -202,7 +204,10 @@ class PaperBroker:
                 "partial": False,
                 "pnl": pnl - fee,
                 "exit_reason": exit_reason,
-                "event": "close"
+                "event": "close",
+                "bars_open": self.pos.bars_open,
+                "mfe_atr": round(self.pos.mfe_atr, 4),
+                "mae_atr": round(self.pos.mae_atr, 4)
             })
             
             if hit_sl and self.pos.strategy_name:

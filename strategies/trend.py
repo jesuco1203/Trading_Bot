@@ -149,45 +149,77 @@ class Trend(BaseStrategy):
         if self.armed_level is None:
             if arm_ok:
                 prev_high = float(df["high"].iat[-2])
-                self.armed_level = max(prev_high, cl)  # usa el nivel más cercano al breakout actual
+                h_now     = float(df["high"].iat[-1])
+                cl_now    = float(df["close"].iat[-1])
+
+                level_raw = max(prev_high, cl_now)
+                self.armed_level = min(level_raw, h_now)
                 self.armed_bars  = 0
                 self.retested    = False
                 self.waiting_pullback = False
+
+                if self.armed_level > h_now:
+                    return Signal("flat", 0.0, None, None, reason="invalid_level_rearm")
+
                 logging.info(f"ARM i={i} lvl={self.armed_level:.2f}")
                 return Signal("flat", 0.0, None, None, reason="armed")
 
         if self.armed_level is not None:
-            RETEST_EPS      = 0.0015   # 0.15%
-            MICRO_PULL_ATR  = 0.07     # 0.07*ATR
-            MICRO_WICK_MIN  = 0.45     # mecha inferior mínima
+            RETEST_EPS      = 0.0015
+            MICRO_PULL_ATR  = 0.80
+            OVERSHOOT_ATR   = 2.50
+            RETURN_EPS      = 0.0050
+            WICK_MIN        = 0.20
+            TIMEOUT_BARS    = 14
 
             ma20 = feats.get("ma20", df["close"].rolling(20).mean().iat[-1])
 
-            touched_level = (l <= self.armed_level*(1-RETEST_EPS) <= h)
+            touched_level = (l <= self.armed_level * (1 - RETEST_EPS) <= h)
             touched_ma20  = (abs(ma20 - self.armed_level)/max(self.armed_level,1e-9) <= 0.003) and (l <= ma20 <= h)
-            micro_pull    = ((self.armed_level - cl) <= MICRO_PULL_ATR*atr_abs) and (cl > o) and ((o - l)/max(h-l,1e-9) >= MICRO_WICK_MIN)
 
-            self.retested = bool(touched_level or touched_ma20 or micro_pull)
-            logging.debug(f"RETEST_DEBUG i={i} lvl={self.armed_level:.2f} eps={RETEST_EPS:.4f} ma20={ma20:.2f} micro_pull={micro_pull} retested={self.retested}")
+            dist_low_atr = abs(l - self.armed_level) / max(atr_abs, 1e-9)
+            lower_wick   = (o - l) / max(h - l, 1e-9)
+            micro_pull   = (dist_low_atr <= MICRO_PULL_ATR) and (lower_wick >= WICK_MIN)
+
+            overshoot     = (self.armed_level - l) / max(atr_abs, 1e-9) >= OVERSHOOT_ATR
+            return_close  = cl >= self.armed_level * (1 - RETURN_EPS)
+            overshoot_rej = overshoot and return_close and (lower_wick >= WICK_MIN)
+
+            self.retested = bool(touched_level or touched_ma20 or micro_pull or overshoot_rej)
             if not self.retested:
                 self.armed_bars += 1
-                if self.armed_bars > 12:  # timeout 12 velas en 30m
+
+                CONT_ADV_ATR  = 0.50
+                CONT_MAX_BARS = 6
+
+                adv_from_lvl = (h - self.armed_level) / max(atr_abs, 1e-9)
+                if self.armed_level <= h and self.armed_bars <= CONT_MAX_BARS and adv_from_lvl >= CONT_ADV_ATR:
+                    swing_low = float(df["low"].iloc[-7:-1].min())
+                    sl_pts = max(cl - swing_low, 2.2 * atr_abs)
+                    tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
+                    partial_tp_pts = 1.0 * atr_abs
+                    partial_sl_offset_atr_mult = 0.3
+                    rr = tp_pts / max(sl_pts, 1e-9)
+                    self._disarm()
+                    return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult,
+                                  reason="continuation_enter", rr=rr)
+
+                if self.armed_bars > TIMEOUT_BARS:
                     self._disarm()
                     return Signal("flat", 0.0, None, None, reason="retest_timeout")
+
+                logging.info(f"RETEST_DEBUG i={i} lvl={self.armed_level:.2f} ma20={ma20:.2f} "
+                             f"dist_low_atr={dist_low_atr:.2f} wick={lower_wick:.2f} "
+                             f"overshoot={overshoot} return_close={return_close} retested={self.retested}")
                 return Signal("flat", 0.0, None, None, reason="waiting_retest")
             
-            # ENTER 30m cuando retestea (nivel/MA20 o micro-pullback)
             if self.retested:
-                if (h - l) >= 1.3 * atr_abs or (max(cl - o, 0.0) / max(h - l, 1e-9)) >= 0.85:
-                    return Signal("flat", 0.0, None, None, reason="extended_bar_guard")
-
                 swing_low = float(df["low"].iloc[-7:-1].min())
                 sl_pts = max(cl - swing_low, 2.0 * atr_abs)
                 tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
                 partial_tp_pts = 1.0 * atr_abs
                 partial_sl_offset_atr_mult = 0.3
                 rr = tp_pts / max(sl_pts, 1e-9)
-
                 self._disarm()
                 return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult,
                               reason="pullback_reject_enter", rr=rr)

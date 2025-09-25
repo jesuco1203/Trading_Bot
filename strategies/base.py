@@ -14,6 +14,7 @@ class Signal:
     partial_sl_offset_atr_mult: Optional[float] = None
     reason: Optional[str] = None
     rr: Optional[float] = None # New
+    risk_scale: float = 1.0
 
 class BaseStrategy:
     def __init__(self, name: str, risk_mult: float = 1.0, time_stop_bars: int = 0, time_stop_mfe_atr: float = 0.0):

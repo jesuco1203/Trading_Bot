@@ -222,7 +222,7 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         strat = all_strategies[strat_name]
         base_risk = config['risk']['risk_per_trade_pct']
         adj_risk = base_risk * strat.risk_mult * (0.5 + 0.5*pmax_used) * (0.5 + 0.5*sig.strength)
-        qty = atr_position_size(equity=equity, sl_pts=sig.sl_pts, risk_pct=adj_risk, tick_value=tick_value)
+        qty = atr_position_size(equity=equity, sl_pts=sig.sl_pts, risk_pct=adj_risk, tick_value=tick_value) * sig.risk_scale
         
         if qty > 0:
             price = float(row["close"])

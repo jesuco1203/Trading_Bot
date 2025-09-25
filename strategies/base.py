@@ -1,8 +1,6 @@
 from __future__ import annotations
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
-import pandas as pd
-import logging
 
 @dataclass
 class Signal:
@@ -43,8 +41,13 @@ class BaseStrategy:
             key = t.get("trade_id") or t.get("entry_ts") or t.get("ts")
             ops.setdefault(key, []).append(t)
 
-        entries = 0; wins = 0; total_pnl = 0.0; rrs = []
-        bars_open_list = []; mfe_atr_list = []; mae_atr_list = []
+        entries = 0
+        wins = 0
+        total_pnl = 0.0
+        rrs = []
+        bars_open_list = []
+        mfe_atr_list = []
+        mae_atr_list = []
 
         for key, evs in ops.items():
             evs.sort(key=lambda x: x.get("ts", 0))

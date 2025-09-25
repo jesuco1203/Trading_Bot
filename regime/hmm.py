@@ -40,10 +40,14 @@ class RegimeHMM:
         normalized_labels = []
         for rank, state in enumerate(order):
             raw_label = self.labels[min(rank, len(self.labels)-1)]
-            if raw_label in ("trending", "trend_up", "trend"): normalized_labels.append("trend")
-            elif raw_label in ("mean_revert", "meanrevert", "range", "mr"): normalized_labels.append("mr")
-            elif raw_label in ("highvol", "high_vol", "vol"): normalized_labels.append("high_vol")
-            else: normalized_labels.append(raw_label) # Fallback
+            if raw_label in ("trending", "trend_up", "trend"):
+                normalized_labels.append("trend")
+            elif raw_label in ("mean_revert", "meanrevert", "range", "mr"):
+                normalized_labels.append("mr")
+            elif raw_label in ("highvol", "high_vol", "vol"):
+                normalized_labels.append("high_vol")
+            else:
+                normalized_labels.append(raw_label) # Fallback
 
         self._state2name = {state: normalized_labels[rank]
                             for rank, state in enumerate(order)}
@@ -56,6 +60,7 @@ class RegimeHMM:
         for p in P:
             d = { self._state2name.get(i, self.labels[-1]): float(p[i])
                   for i in range(self.model.n_components) }
-            for k in self.labels: d.setdefault(k, 0.0)
+            for k in self.labels:
+                d.setdefault(k, 0.0)
             out.append(d)
         return out

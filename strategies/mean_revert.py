@@ -1,8 +1,6 @@
 from __future__ import annotations
 from strategies.base import BaseStrategy, Signal
 from typing import Dict, Any
-import pandas as pd
-import numpy as np
 
 class MeanRevert(BaseStrategy):
     def __init__(self, risk_mult: float = 1.0,
@@ -75,13 +73,17 @@ class MeanRevert(BaseStrategy):
         # Gate conditions
         gate_ok = True
         if lab != "mr":
-            self.blocks["gate_not_mr"] = self.blocks.get("gate_not_mr",0)+1; gate_ok = False
+            self.blocks["gate_not_mr"] = self.blocks.get("gate_not_mr",0)+1
+            gate_ok = False
         if pmax < self.gate_pmax_th:
-            self.blocks["gate_pmax_low"] = self.blocks.get("gate_pmax_low",0)+1; gate_ok = False
+            self.blocks["gate_pmax_low"] = self.blocks.get("gate_pmax_low",0)+1
+            gate_ok = False
         if adx >= self.gate_adx_max:
-            self.blocks["gate_adx_high"] = self.blocks.get("gate_adx_high",0)+1; gate_ok = False
+            self.blocks["gate_adx_high"] = self.blocks.get("gate_adx_high",0)+1
+            gate_ok = False
         if atr_pct > atr_p85:
-            self.blocks["gate_atr_high"] = self.blocks.get("gate_atr_high",0)+1; gate_ok = False
+            self.blocks["gate_atr_high"] = self.blocks.get("gate_atr_high",0)+1
+            gate_ok = False
 
         if not gate_ok:
             return Signal("flat",0.0,None,None,reason="mr_gate_fail")
@@ -97,10 +99,10 @@ class MeanRevert(BaseStrategy):
             self.blocks["too_close_to_sma"] = self.blocks.get("too_close_to_sma", 0) + 1
             return Signal("flat", 0.0, None, None, reason="too_close_to_sma")
 
-        o, h, l, c = map(float, (df["open"].iat[-1], df["high"].iat[-1], df["low"].iat[-1], df["close"].iat[-1]))
-        rng = max(h - l, 1e-9)
+        o, h, low_price, c = map(float, (df["open"].iat[-1], df["high"].iat[-1], df["low"].iat[-1], df["close"].iat[-1]))
+        rng = max(h - low_price, 1e-9)
         rbody_long = (c - o) / rng if rng > 0 and c > o else 0
-        lower_wick_pct = (o - l) / rng if rng > 0 and o > l else 0
+        lower_wick_pct = (o - low_price) / rng if rng > 0 and o > low_price else 0
 
         # Signal A: Z-score, RSI, and candle body/wick
         long_a = (z_score <= self.signal_z_th) and (rsi < self.signal_rsi_th) and \

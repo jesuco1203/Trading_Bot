@@ -3,7 +3,7 @@ import logging
 import pandas as pd
 import toml
 import numpy as np
-from datetime import datetime, timedelta
+from typing import Optional
 
 from data.okx_client import get_ohlcv
 from features.core import build_features
@@ -13,12 +13,12 @@ from strategies.trend import Trend
 from strategies.mean_revert import MeanRevert
 from strategies.vol_breakout import VolBreakout
 from execution.paper import PaperBroker
-from risk.position_sizing import atr_position_size
+from risk.position_sizing import compute_qty_for_stop, InstrumentSpec, RiskConfig
 from monitoring.metrics import RollingMetrics
 
 logging.basicConfig(level=logging.DEBUG, format='%(message)s', handlers=[logging.StreamHandler()])
 
-def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_tf: str, window_name: str = "Full Data"):
+def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_tf: str, window_name: str = "Full Data", mr_only: bool = False, fixed_qty: Optional[float] = None, no_fees: bool = False, taker_fee: Optional[float] = None):
     logging.info(f"\n--- Running Backtest for {symbol} {base_tf} ({window_name}) ---")
 
     df_base = build_features(df_base)
@@ -98,11 +98,27 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
     if "VolBreakout" in config['strategy_mapping'].get('high_vol', []):
         all_strategies["VolBreakout"] = VolBreakout()
     strategy_mapping = config['strategy_mapping']
+    # --- PATCH START: MR-only mapping ---
+    if mr_only:
+        # Sólo MR activo desde el selector
+        strategy_mapping = {
+            "trend": [],
+            "mr": ["MeanRevert"],
+            "high_vol": [],
+        }
+    # --- PATCH END ---
     if not config['strategy_params'].get('ETH30m_enable_trend', True): # Default to True if not found
         strategy_mapping["trend"] = []
+    # --- PATCH START: broker comm rate override ---
+    comm_rate = config["costs"].get("taker_fee", 0.0005)
+    if no_fees:
+        comm_rate = 0.0
+    if taker_fee is not None:
+        comm_rate = float(taker_fee)
+    # --- PATCH END ---
     broker = PaperBroker(
         initial_capital=config['risk']['starting_equity'],
-        comm_rate=config['costs']['commission_rate'],
+        comm_rate=comm_rate,
         slippage_min=config['costs']['slippage_min'],
         all_strategies=all_strategies
     )
@@ -128,6 +144,10 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
     p_prev = {label: 1.0 / hmm_model.n_states for label in hmm_model.labels}
     shared_context = {}
     state = {"enabled": {"Trend": True, "MeanRevert": True}}
+    # --- PATCH START: disable Trend when mr_only ---
+    if mr_only:
+        state["enabled"]["Trend"] = False
+    # --- PATCH END ---
 
     for i in range(warmup_period, len(df_base)):
         current_dt = df_base.index[i]
@@ -148,7 +168,7 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         lab = max(proba_dict, key=proba_dict.get)
 
         # MTM and Position Update
-        pnl_bar = broker.mark_to_market(float(row["close"]), ts=current_dt, high=float(row["high"]), low=float(row["low"]))
+        pnl_bar = broker.mark_to_market(float(row["close"]), ts=current_dt, high=float(row["high"]), low=float(row["low"]), current_atr=atr_t)
         equity += pnl_bar
         strategy_name = broker.pos.strategy_name if broker.pos.side != 0 else None
         metrics.update(current_dt, equity, broker.exposure(), pnl=pnl_bar, strategy_name=strategy_name)
@@ -220,9 +240,85 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         strat_name, sig = signals[0]
         was_flat = (prev_exposure == 0)
         strat = all_strategies[strat_name]
-        base_risk = config['risk']['risk_per_trade_pct']
-        adj_risk = base_risk * strat.risk_mult * (0.5 + 0.5*pmax_used) * (0.5 + 0.5*sig.strength)
-        qty = atr_position_size(equity=equity, sl_pts=sig.sl_pts, risk_pct=adj_risk, tick_value=tick_value) * sig.risk_scale
+        
+        qty = 0.0
+        if strat_name == "MeanRevert":
+            side = 1 if sig.side == "long" else -1
+            entry_price = float(row["close"])
+            stop_price = entry_price - sig.sl_pts if side > 0 else entry_price + sig.sl_pts
+            
+            inst = InstrumentSpec(
+                symbol=symbol,
+                linear=True,
+                contract_size=1.0,
+                lot_step=0.0001,
+                min_qty=0.001,
+            )
+            risk_cfg = RiskConfig(
+                risk_usd_per_trade=config['strategy_params'].get("MR_risk_usd_per_trade", 25.0),
+                max_notional_usd=config['strategy_params'].get("MR_max_notional_usd", 1000.0),
+                max_leverage=config['strategy_params'].get("MR_leverage_max", 1.0),
+                slippage_usd=0.0,
+            )
+            
+            qty = compute_qty_for_stop(
+                entry_price=entry_price,
+                stop_price=stop_price,
+                inst=inst,
+                risk=risk_cfg,
+                side=side,
+            )
+            
+            # Telemetry
+            dist_px = abs(entry_price - stop_price)
+            loss_per_qty_usd = dist_px * inst.contract_size
+            max_notional = risk_cfg.max_notional_usd * max(risk_cfg.max_leverage, 1.0)
+            logging.info(f"MR SIZE DEBUG: entry={entry_price}, stop={stop_price}, dist_px={dist_px:.2f}, qty={qty:.4f}, notional={qty*entry_price:.2f}, risk_usd={risk_cfg.risk_usd_per_trade}, loss_per_qty_usd={loss_per_qty_usd:.2f}, max_notional={max_notional:.2f}, contract_size={inst.contract_size}, linear={inst.linear}")
+
+            # --- Enforcement de riesgo --- 
+            entry = entry_price
+            stop = stop_price
+            dist = abs(entry - stop)
+
+            # CAP por nocional
+            notional = entry * qty
+            max_notional = risk_cfg.max_notional_usd * max(risk_cfg.max_leverage, 1.0)
+            if notional > max_notional:
+                qty = max_notional / max(entry, 1e-9)
+                notional = entry * qty
+                est_loss_usd = dist * qty
+
+            # CAP por pérdida máxima
+            est_loss_usd = dist * qty
+            if est_loss_usd > config['strategy_params'].get("MR_max_loss_usd", 25.0):
+                qty *= config['strategy_params'].get("MR_max_loss_usd", 25.0) / max(est_loss_usd, 1e-9)
+                notional = entry * qty
+                est_loss_usd = dist * qty
+
+            # Clamp final
+            qty = max(qty, config['strategy_params'].get("MR_min_qty", 0.001))
+
+            logging.info(
+                f"MR SIZE DEBUG:\n" + 
+                f"  entry={entry:.2f}, stop={stop:.2f}, dist={dist:.2f}, qty={qty:.4f}, notional={entry * qty:.2f}, est_loss_usd={dist * qty:.2f}\n" + 
+                f"  cfg: max_loss_usd={config['strategy_params'].get('MR_max_loss_usd')}, max_notional_usd={risk_cfg.max_notional_usd}, leverage_max={risk_cfg.max_leverage}"
+            )
+
+        else: # Fallback to old sizing for other strategies
+            base_risk = config['risk']['risk_per_trade_pct']
+            adj_risk = base_risk * strat.risk_mult * (0.5 + 0.5*pmax_used) * (0.5 + 0.5*sig.strength)
+            # This part is for non-MR strategies, ensure it's correct or replace as well if needed.
+            # For now, assuming Trend strategy has its own logic or this is a fallback.
+            tick_value = config['market'].get('tick_value', 0.01)
+            if sig.sl_pts > 0 and tick_value > 0:
+                risk_usd_val = equity * adj_risk
+                qty = risk_usd_val / (sig.sl_pts * tick_value)
+            else:
+                qty = 0.0
+        # --- PATCH START: fixed qty override ---
+        if fixed_qty is not None:
+            qty = float(fixed_qty)
+        # --- PATCH END ---
         
         if qty > 0:
             price = float(row["close"])
@@ -231,16 +327,20 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
                 sl_pts=sig.sl_pts, tp_pts=sig.tp_pts, partial_tp_pts=sig.partial_tp_pts, 
                 ts=current_dt, strategy_name=strat_name, atr=atr_t, partial_sl_offset_atr_mult=sig.partial_sl_offset_atr_mult, rr=sig.rr,
                 symbol=symbol, tf=base_tf,
-                time_stop_bars=strat.time_stop_bars, time_stop_mfe_atr=strat.time_stop_mfe_atr
+                time_stop_bars=strat.time_stop_bars, time_stop_mfe_atr=strat.time_stop_mfe_atr,
+                max_loss_usd=config['strategy_params'].get("MR_max_loss_usd", 50.0)
             )
             if was_flat:
                 broker.entries_count += 1
                 last_entry_i = i
 
-            adx = feats_base['adx'].iloc[i]
-            atr_pct = atr_t / price
             rr = sig.tp_pts / sig.sl_pts if sig.sl_pts > 0 else 0
             logging.info(f"ENTER i={i} strat={strat_name} rr={rr:.2f} sl={sig.sl_pts:.1f} tp={sig.tp_pts:.1f} reason={sig.reason}")
+
+    # Close any open position at the end of the backtest
+    if broker.exposure() != 0:
+        last_row = df_base.iloc[-1]
+        broker.close_open_position(price=float(last_row["close"]), ts=last_row.name, reason="session_end")
 
     trend_pnl, trend_rr_avg, trend_entries, trend_wins, trend_hit_rate, trend_avg_bars_open, trend_mfe_atr_avg, trend_mae_atr_avg = (0.0, 0.0, 0, 0, 0.0, 0, 0.0, 0.0)
     if "Trend" in all_strategies:
@@ -256,9 +356,13 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
     if "MeanRevert" in all_strategies:
         summary_result = all_strategies["MeanRevert"].print_summary(broker.trades)
         if summary_result is None:
-            logging.error(f"MeanRevert.print_summary returned None!")
+            logging.error("MeanRevert.print_summary returned None!")
         else:
             mr_pnl, mr_rr_avg, mr_entries, mr_wins, mr_hit_rate, mr_avg_bars_open, mr_mfe_atr_avg, mr_mae_atr_avg = summary_result
+            # Reconciliation
+            mr_ledger_pnl = sum(t['pnl'] for t in broker.trades if t.get('strategy') == 'MeanRevert')
+            logging.info(f"MR RECONCILE: sum(ledger.pnl_net)={mr_ledger_pnl:.2f}, MR Summary PnL={mr_pnl:.2f}, diff={mr_pnl - mr_ledger_pnl:.2f}")
+
             logging.info(f"--- {all_strategies['MeanRevert'].name} Summary ---")
             logging.info(f"Entries: {mr_entries} | Wins(TP): {mr_wins} | Hit: {mr_hit_rate:.0f}% | RR Avg: {mr_rr_avg:.2f} | PnL: {mr_pnl:.2f}")
             logging.info(f"Avg Bars Open: {mr_avg_bars_open:.0f} | MFE ATR Avg: {mr_mfe_atr_avg:.2f} | MAE ATR Avg: {mr_mae_atr_avg:.2f}")
@@ -288,7 +392,16 @@ def run_single_backtest(config: dict, df_base: pd.DataFrame, symbol: str, base_t
         "mr_block_summary": mr_block_summary
     }
 
-def main(config_path: str, limit_bars: int, start_index: int = 0):
+    parser.add_argument("--start-index", type=int, default=0, help="Start index for loading historical bars (for walk-forward)")
+    parser.add_argument("--mr-only", action="store_true", help="Run only MeanRevert strategy")
+    parser.add_argument("--fixed-qty", type=int, help="Use fixed quantity for trades")
+    parser.add_argument("--no-fees", action="store_true", help="Disable all fees")
+    parser.add_argument("--taker-fee", type=float, help="Override taker fee")
+    args = parser.parse_args()
+
+    main(config_path=args.config, limit_bars=args.limit_bars, start_index=args.start_index, mr_only=args.mr_only, fixed_qty=args.fixed_qty, no_fees=args.no_fees, taker_fee=args.taker_fee)
+
+def main(config_path: str, limit_bars: int, start_index: int = 0, mr_only: bool = False, fixed_qty: Optional[int] = None, no_fees: bool = False, taker_fee: Optional[float] = None):
     """
     Main function to run the backtesting pipeline.
     """
@@ -310,7 +423,6 @@ def main(config_path: str, limit_bars: int, start_index: int = 0):
         return
         
     df_full = build_features(df_full)
-    feats_full = df_full.copy()
 
     # Define walk-forward windows
     window_size = limit_bars # Use limit_bars as window_size
@@ -329,7 +441,7 @@ def main(config_path: str, limit_bars: int, start_index: int = 0):
         df_window = df_full.iloc[current_start_idx:end_idx].copy()
         
         # Run backtest for the current window
-        window_results = run_single_backtest(config, df_window, symbol, base_tf, f"Window {window_num} ({current_start_idx}-{end_idx})")
+        window_results = run_single_backtest(config, df_window, symbol, base_tf, f"Window {window_num} ({current_start_idx}-{end_idx})", mr_only=mr_only, fixed_qty=fixed_qty, no_fees=no_fees, taker_fee=taker_fee)
         results.append(window_results)
 
     # Report aggregated results
@@ -357,6 +469,12 @@ if __name__ == "__main__":
     parser.add_argument("--limit-bars", type=int, default=2000, help="Number of historical bars to load")
     parser.add_argument("--config", type=str, required=True, help="Path to the configuration file (TOML)")
     parser.add_argument("--start-index", type=int, default=0, help="Start index for loading historical bars (for walk-forward)")
+    # --- PATCH START: argparse extra flags ---
+    parser.add_argument("--mr-only", action="store_true", help="Ejecuta sólo MeanRevert")
+    parser.add_argument("--fixed-qty", type=float, default=None, help="Tamaño fijo de posición")
+    parser.add_argument("--no-fees", action="store_true", help="Desactiva comisiones")
+    parser.add_argument("--taker-fee", type=float, default=None, help="Override de comisión taker (p.ej. 0.0005)")
+    # --- PATCH END ---
     args = parser.parse_args()
 
-    main(config_path=args.config, limit_bars=args.limit_bars, start_index=args.start_index)
+    main(config_path=args.config, limit_bars=args.limit_bars, start_index=args.start_index, mr_only=args.mr_only, fixed_qty=args.fixed_qty, no_fees=args.no_fees, taker_fee=args.taker_fee)

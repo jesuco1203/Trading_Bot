@@ -75,8 +75,10 @@ class RollingMetrics:
 
     def summary(self):
         r = np.diff(self.equity) if len(self.equity)>1 else np.array([0.0])
-        if r.std() == 0: sharpe = 0.0
-        else: sharpe = (r.mean() / r.std()) * np.sqrt(252)
+        if r.std() == 0:
+            sharpe = 0.0
+        else:
+            sharpe = (r.mean() / r.std()) * np.sqrt(252)
         maxdd = 0.0
         peak = -1e18
         dd = 0.0

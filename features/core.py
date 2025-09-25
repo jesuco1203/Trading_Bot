@@ -2,11 +2,11 @@ import pandas as pd
 import numpy as np
 
 def _atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
-    h, l, c = df["high"], df["low"], df["close"]
+    h, low_price, c = df["high"], df["low"], df["close"]
     prev_c = c.shift(1)
-    tr1 = h - l
+    tr1 = h - low_price
     tr2 = (h - prev_c).abs()
-    tr3 = (l - prev_c).abs()
+    tr3 = (low_price - prev_c).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return tr.rolling(n).mean()
 
@@ -25,14 +25,17 @@ def _zscore(s: pd.Series, n: int = 50) -> pd.Series:
     return ((s - mean) / std).bfill()
 
 def add_adx(df, n=14):
-    h = df["high"].astype(float); l = df["low"].astype(float); c = df["close"].astype(float)
-    up = h.diff(); dn = -l.diff()
+    h = df["high"].astype(float)
+    low_price = df["low"].astype(float)
+    c = df["close"].astype(float)
+    up = h.diff()
+    dn = -low_price.diff()
     plus_dm  = np.where((up > dn) & (up > 0), up, 0.0).astype(float)
     minus_dm = np.where((dn > up) & (dn > 0), dn, 0.0).astype(float)
 
-    tr1 = (h - l).abs()
+    tr1 = (h - low_price).abs()
     tr2 = (h - c.shift()).abs()
-    tr3 = (l - c.shift()).abs()
+    tr3 = (low_price - c.shift()).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1).astype(float)
 
     atr = tr.ewm(alpha=1/n, adjust=False).mean()

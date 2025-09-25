@@ -1,5 +1,6 @@
 from __future__ import annotations
-import os, pandas as pd
+import os
+import pandas as pd
 
 def _path(root: str, symbol: str, timeframe: str) -> str:
     p = symbol.replace("/", "_").replace(":", "_")

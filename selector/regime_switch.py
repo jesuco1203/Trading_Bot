@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Dict, List
 
 class RegimeSelector:
     def __init__(self, hmm, mapping: Dict[str, List[str]], enter_th: float = 0.45, exit_th: float = 0.35, persistence: int = 2):
@@ -19,9 +19,12 @@ class RegimeSelector:
         # Determine current most probable regime
         raw_label = max(proba_dict, key=proba_dict.get)
         lab = raw_label.lower()
-        if lab in ("trending","trend_up","trend"): lab = "trend"
-        elif lab in ("mean_revert","meanrevert","range","mr"): lab = "mr"
-        elif lab in ("highvol","high_vol","vol"): lab = "high_vol"
+        if lab in ("trending","trend_up","trend"):
+            lab = "trend"
+        elif lab in ("mean_revert","meanrevert","range","mr"):
+            lab = "mr"
+        elif lab in ("highvol","high_vol","vol"):
+            lab = "high_vol"
         current_most_probable_regime = lab
 
         # Update regime duration

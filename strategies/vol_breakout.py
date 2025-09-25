@@ -1,7 +1,6 @@
 from __future__ import annotations
 from strategies.base import BaseStrategy, Signal
 from typing import Dict, Any
-import pandas as pd
 
 class VolBreakout(BaseStrategy):
     def __init__(self):

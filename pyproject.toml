@@ -1,0 +1,4 @@
+[tool.ruff]
+exclude = ["venv", ".venv", "build", "dist", "__pycache__", "**/site-packages/**"]
+line-length = 100
+target-version = "py39"

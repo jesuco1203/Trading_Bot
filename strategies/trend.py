@@ -1,10 +1,6 @@
 from __future__ import annotations
 from strategies.base import BaseStrategy, Signal
-from typing import Dict, Any, Optional
-import pandas as pd
-import numpy as np
 import logging
-import math
 logger = logging.getLogger(__name__)
 
 class Trend(BaseStrategy):
@@ -77,19 +73,18 @@ class Trend(BaseStrategy):
         return max(60, self.arm_timeout)
 
     def signal(self, ctx: dict) -> Signal:
-        tf = ctx.get("tf", "")
-        is_4h = tf == "4h"
-        lab = ctx.get("regime_label", "")
-        pmax = float(ctx.get("pmax", 0.0))
-
+        
         ctx['shared_context']['trend_armed'] = self.armed_level is not None
 
-        df = ctx["df"]; feats = ctx["feats"]
+        df = ctx["df"]
+        feats = ctx["feats"]
 
         # === PRE-CÁLCULOS SEGUROS ===
         i   = int(ctx.get("i", 0))
-        o   = float(df["open"].iat[-1]); h = float(df["high"].iat[-1])
-        l   = float(df["low"].iat[-1]);  cl = float(df["close"].iat[-1])
+        o   = float(df["open"].iat[-1])
+        h = float(df["high"].iat[-1])
+        low_price   = float(df["low"].iat[-1])
+        cl = float(df["close"].iat[-1])
 
         atr_abs  = float(feats["atr"].iat[-1])
         adx_now  = float(feats["adx"].iat[-1])
@@ -103,7 +98,8 @@ class Trend(BaseStrategy):
             ma_slow = df["close"].rolling(window=50, min_periods=50).mean()
 
         # === DIRECCIÓN Y SEPARACIÓN ===
-        fast = float(ma_fast.iat[-1]); slow = float(ma_slow.iat[-1])
+        fast = float(ma_fast.iat[-1])
+        slow = float(ma_slow.iat[-1])
         sep  = abs(fast - slow) / max(abs(slow), 1e-9)
 
         # up: fast sube y slow no cae (>= permite mesetas)
@@ -112,14 +108,14 @@ class Trend(BaseStrategy):
         cross_up = (ma_fast.iat[-2] <= ma_slow.iat[-2]) and (ma_fast.iat[-1] >  ma_slow.iat[-1])
 
         # === IMPULSO DE BARRA ===
-        rng   = max(h - l, 1e-9)
+        rng   = max(h - low_price, 1e-9)
         rbody = max(cl - o, 0.0) / rng              # proporción de cuerpo alcista
-        long_wick  = (o - l)/rng >= 0.45            # mecha inferior larga (rechazo)
-        bar_expand = (h - l) >= 1.10 * atr_abs      # rango ≥ 1.1×ATR
+        long_wick  = (o - low_price)/rng >= 0.45            # mecha inferior larga (rechazo)
+        bar_expand = (h - low_price) >= 1.10 * atr_abs      # rango ≥ 1.1×ATR
 
         # === UMBRALES ADAPTATIVOS ===
-        sep_min = 0.004 if adx_now >= 22.0 else 0.006   # antes 0.010/0.006
-        adx_abs_ok  = (adx_now >= 22.0)
+        sep_min = 0.0035 if adx_now >= 30 else 0.0055
+        adx_abs_ok  = (adx_now >= 21.0)
         adx_slope_ok= ((adx_now - adx_prev) >= 0.4 and adx_now >= 18.0)
 
         # evidencia de impulso: cualquiera de los 3
@@ -131,9 +127,11 @@ class Trend(BaseStrategy):
 
         arm_ok = trend_dir_ok and adx_ok and impulse_ok
 
-        if not arm_ok and adx_now >= 30 and bar_expand and sep >= 0.004:
-            arm_ok = True
-            logging.info(f"TREND-GATE i={i} momentum_override=True")
+        momentum_override = adx_now >= 30 and bar_expand and sep >= 0.004
+        if momentum_override:
+            momentum_override = False # TEMP: no saltar el trend_dir gate
+            # arm_ok = True
+            # logging.debug(f"TREND-GATE i={i} momentum_override=True")
 
         logging.info(f"TREND-GATE i={i} adx={adx_now:.1f} up={up} sep={sep:.4f} "
              f"trend_dir_ok={trend_dir_ok} adx_ok={adx_ok} impulse_ok={impulse_ok} arm_ok={arm_ok}")
@@ -141,9 +139,12 @@ class Trend(BaseStrategy):
         # contadores de motivo (diagnóstico)
         self.blocks = getattr(self, 'blocks', {})
         if not arm_ok:
-            if not trend_dir_ok: self.blocks['gate_trend_dir_fail'] = self.blocks.get('gate_trend_dir_fail',0)+1
-            if not adx_ok:       self.blocks['gate_adx_fail']       = self.blocks.get('gate_adx_fail',0)+1
-            if not impulse_ok:   self.blocks['gate_impulse_fail']   = self.blocks.get('gate_impulse_fail',0)+1
+            if not trend_dir_ok:
+                self.blocks['gate_trend_dir_fail'] = self.blocks.get('gate_trend_dir_fail',0)+1
+            if not adx_ok:
+                self.blocks['gate_adx_fail']       = self.blocks.get('gate_adx_fail',0)+1
+            if not impulse_ok:
+                self.blocks['gate_impulse_fail']   = self.blocks.get('gate_impulse_fail',0)+1
             return Signal("flat", 0.0, None, None, reason="trend_gate_fail")
 
         if self.armed_level is None:
@@ -168,20 +169,20 @@ class Trend(BaseStrategy):
             RETEST_EPS      = 0.0015
             MICRO_PULL_ATR  = 0.80
             OVERSHOOT_ATR   = 2.50
-            RETURN_EPS      = 0.0050
-            WICK_MIN        = 0.20
+            RETURN_EPS      = 0.0007  # 0.07% (más estricto)
+            WICK_MIN        = 0.50
             TIMEOUT_BARS    = 14
 
             ma20 = feats.get("ma20", df["close"].rolling(20).mean().iat[-1])
 
-            touched_level = (l <= self.armed_level * (1 - RETEST_EPS) <= h)
-            touched_ma20  = (abs(ma20 - self.armed_level)/max(self.armed_level,1e-9) <= 0.003) and (l <= ma20 <= h)
+            touched_level = (low_price <= self.armed_level * (1 - RETEST_EPS) <= h)
+            touched_ma20  = (abs(ma20 - self.armed_level)/max(self.armed_level,1e-9) <= 0.003) and (low_price <= ma20 <= h)
 
-            dist_low_atr = abs(l - self.armed_level) / max(atr_abs, 1e-9)
-            lower_wick   = (o - l) / max(h - l, 1e-9)
+            dist_low_atr = abs(low_price - self.armed_level) / max(atr_abs, 1e-9)
+            lower_wick   = (o - low_price) / max(h - low_price, 1e-9)
             micro_pull   = (dist_low_atr <= MICRO_PULL_ATR) and (lower_wick >= WICK_MIN)
 
-            overshoot     = (self.armed_level - l) / max(atr_abs, 1e-9) >= OVERSHOOT_ATR
+            overshoot     = (self.armed_level - low_price) / max(atr_abs, 1e-9) >= OVERSHOOT_ATR
             return_close  = cl >= self.armed_level * (1 - RETURN_EPS)
             overshoot_rej = overshoot and return_close and (lower_wick >= WICK_MIN)
 
@@ -189,11 +190,16 @@ class Trend(BaseStrategy):
             if not self.retested:
                 self.armed_bars += 1
 
-                CONT_ADV_ATR  = 0.50
-                CONT_MAX_BARS = 6
+                CONT_ADV_ATR  = 0.80   # antes 0.60
+                CONT_MAX_BARS = 5      # acorta ventana de continuación
+                bar_expand = (h - low_price) >= 1.20 * atr_abs
+                rbody_pct  = max(cl - o, 0.0) / max(h - low_price, 1e-9)
 
-                adv_from_lvl = (h - self.armed_level) / max(atr_abs, 1e-9)
-                if self.armed_level <= h and self.armed_bars <= CONT_MAX_BARS and adv_from_lvl >= CONT_ADV_ATR:
+                if (self.armed_bars <= CONT_MAX_BARS
+                    and (h - self.armed_level) / max(atr_abs,1e-9) >= CONT_ADV_ATR
+                    and adx_now >= 28.0
+                    and sep >= 0.0035
+                    and (bar_expand or rbody_pct >= 0.55)):
                     swing_low = float(df["low"].iloc[-7:-1].min())
                     sl_pts = max(cl - swing_low, 2.2 * atr_abs)
                     tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)

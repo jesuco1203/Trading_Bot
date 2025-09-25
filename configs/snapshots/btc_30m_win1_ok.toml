@@ -35,7 +35,7 @@ high_vol = []
 
 [strategy_params]
 Trend_risk_mult = 0.6
-MR_risk_mult    = 0.25
+MR_risk_mult    = 0.30
 
 # Trend Strategy Params (example values, adjust as needed)
 Trend_arm_rbody_th = 0.6
@@ -61,12 +61,6 @@ Trend_time_stop_mfe_atr = 0.5
 Trend_ma_fast_len = 20
 Trend_ma_slow_len = 50
 Trend_sep_min = 0.0010
-
-MR_risk_usd_per_trade = 25
-MR_max_loss_usd       = 25
-MR_max_notional_usd   = 10000
-MR_leverage_max       = 1
-MR_min_qty            = 0.001
 
 # MeanRevert Strategy Params (example values, adjust as needed)
 MeanRevert_risk_mult = 0.5

@@ -1,5 +1,9 @@
 from __future__ import annotations
-import os, time, argparse, pathlib, datetime as dt
+import os
+import time
+import argparse
+import pathlib
+import datetime as dt
 import pandas as pd
 
 try:
@@ -14,11 +18,13 @@ def fetch_ohlcv_full(ex, symbol, timeframe, since_ms, until_ms, limit=200):
     out, cursor = [], since_ms
     while True:
         batch = ex.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit)
-        if not batch: break
+        if not batch:
+            break
         out += batch
         last = batch[-1][0]
         cursor = last + 1
-        if cursor >= until_ms: break
+        if cursor >= until_ms:
+            break
         time.sleep(ex.rateLimit/1000.0)
     if not out:
         return pd.DataFrame(columns=["ts","open","high","low","close","volume"])
@@ -27,7 +33,8 @@ def fetch_ohlcv_full(ex, symbol, timeframe, since_ms, until_ms, limit=200):
     return df
 
 def save_parquet(df, path):
-    if df.empty: return
+    if df.empty:
+        return
     _mk(os.path.dirname(path))
     if os.path.exists(path):
         old = pd.read_parquet(path)
@@ -35,7 +42,8 @@ def save_parquet(df, path):
     df.to_parquet(path, index=False)
 
 def norm_sym(s: str) -> str:
-    if ":" in s or "/" in s: return s
+    if ":" in s or "/" in s:
+        return s
     base = s.split("-")[0]
     return f"{base}/USDT:USDT"  # OKX perps lineales en ccxt
 

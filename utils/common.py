@@ -3,6 +3,7 @@ import sys
 import time
 import requests
 from functools import wraps
+import numpy as np
 
 def setup_logger():
     """Configura el logger para que escriba en un archivo y en la consola."""
@@ -67,7 +68,6 @@ def validate_config(config):
         raise ValueError("'position_risk_percentage' debe estar entre 0 y 100")
     logging.info("Configuración validada exitosamente.")
 
-
 def send_telegram_notification(message, config):
     """Envía una notificación a través de Telegram."""
     bot_token = config['telegram']['bot_token']
@@ -88,3 +88,4 @@ def send_telegram_notification(message, config):
         response.raise_for_status()
     except Exception as e:
         logging.error(f"Error al enviar notificación de Telegram: {e}")
+

@@ -1,10 +1,10 @@
 [market]
 symbols = ["BTC-USDT-SWAP"]
 timeframes = ["30m"]
-tick_value = 0.01 # Assuming BTC-USDT has 0.01 tick size
+tick_value = 0.01
 
 [data]
-root = "data_alt"
+root = "data/okx"
 
 [risk]
 starting_equity = 10000.0
@@ -19,7 +19,7 @@ max_consecutive_losses_mr = 2
 [costs]
 taker_fee = 0.0005
 maker_fee = 0.0002
-slippage_bps = 1.0 # 1 basis point = 0.01%
+slippage_bps = 1.0
 
 [hmm]
 n_states = 3
@@ -27,18 +27,16 @@ n_states = 3
 [selector]
 enter_th = 0.45
 exit_th = 0.35
-persistence = 2 # For 30m
+persistence = 2
 
 [strategy_mapping]
-trend = ["TrendV2"]   # deja Trend original disponible pero desactivado
-mr    = ["MeanRevert"]
+trend = ["TrendV2"]
+mr    = []
 high_vol = []
 
 [strategy_params]
 Trend_risk_mult = 0.6
 MR_risk_mult    = 0.25
-
-# Trend Strategy Params (example values, adjust as needed)
 Trend_arm_rbody_th = 0.6
 Trend_arm_adx_th = 25.0
 Trend_arm_adx_delta_th = 5.0
@@ -62,22 +60,16 @@ Trend_time_stop_mfe_atr = 0.5
 Trend_ma_fast_len = 20
 Trend_ma_slow_len = 50
 Trend_sep_min = 0.0010
-
-# Trend caps (como MR)
 Trend_risk_usd_per_trade = 10
 Trend_max_loss_usd       = 25
 Trend_max_notional_usd   = 10000
 Trend_leverage_max       = 1
 Trend_min_qty            = 0.001
-
-# MeanRevert caps
 MR_risk_usd_per_trade = 20
 MR_max_loss_usd       = 25
 MR_max_notional_usd   = 10000
 MR_leverage_max       = 1
 MR_min_qty            = 0.001
-
-# MeanRevert Strategy Params (example values, adjust as needed)
 MeanRevert_risk_mult = 0.5
 MeanRevert_gate_pmax_th = 0.6
 MeanRevert_gate_adx_th = 20.0
@@ -104,7 +96,6 @@ MeanRevert_partial_sl_offset_atr = 0.1
 smoke_bypass_trendv2 = true
 
 [trend_v2]
-# Desencadenantes
 n_don = 20
 require_trend = false
 require_adx_rising = false
@@ -130,7 +121,6 @@ relax_progress_pct = 0.50
 diag_triggers = true
 allow_when_bias_neutral = true
 htf_neutral_k_atr = 0.6
-
 sl_atr_mult = 1.7
 sl_swing_lookback = 5
 trail_atr_mult = 1.7
@@ -140,22 +130,16 @@ partial_take_frac = 0.33
 reentry_size_mult = 0.5
 atr_pct_high = 0.015
 atr_pct_low  = 0.006
-
 adx_rising_bars = 3
 structure_confirm = true
-
 reentry_enabled = true
 reentry_on_last_sl = true
 reentry_max_per_signal = 1
 reentry_window = 16
-reentry_sl_bars_open_max = 16
-reentry_sl_bars_open_relax = 4
+reentry_sl_bars_open_max = 2
 reentry_eps_atr = 0.0010
-reentry_rr_min = 0.7
-reentry_adx_uplift = true
-reentry_exec_enabled = false
 sl_swing_pad_atr = 0.2
-don_body_min_atr = 0.18
+don_body_min_atr = 0.15
 sl_mode = "capped"
 sl_swing_extra_atr_cap = 0.70
 ema_min_sep_atr = 0.18
@@ -167,47 +151,38 @@ don_ema_sep_atr = 0.15
 relaxer_enabled = false
 
 [exits]
-# Stop ni muy estrecho ni inmenso:
 sl_atr          = 0.9
-# TP moderado para romper el 0% de aciertos:
 tp_final_r      = 1.2
-# Break-even temprano para proteger avance:
 be_trigger_atr  = 0.5
-# Trailing lógico (al SL, no al TP):
 trail_atr_mult  = 1.7
 time_stop_bars  = 60
-# (opcional parcial, si ya lo tenías)
 tp_r_primary     = 0.8
 tp_primary_ratio = 0.5
 
-
 [cooldown]
-after_loss_streak = 6   # velas sin operar tras racha >=2
-after_kill_switch = 24  # velas sin operar tras kill-switch
+after_loss_streak = 6
+after_kill_switch = 24
 
 [telemetry]
 audit_csv = true
 trades_csv = true
 stats_console = true
-# contadores para diagnosticar “cuello de botella”
 count_trigger_raw = true
 count_passed_filters = true
 log_regime_bias = true
 log_exit_mgmt = true
 
 [export]
-# Plantillas de nombre unificadas
 audit_pattern  = "audit_${symbol}_${timeframe}_window_${win}_${i0}-${i1}.csv"
 trades_pattern = "trades_${symbol}_${timeframe}_window_${win}_${i0}-${i1}.csv"
 summary_dir = "reports"
 
 [validation_targets]
-# Metas de esta tanda (para que tu runner avise en consola)
 min_trades_per_window = 8
 min_hit_rate_pct = 20
 min_median_mfe_atr = 1.0
 max_median_mae_atr = 1.2
-min_pass_ratio_pct = 20   # passed_filters >= 20% de trigger_raw
+min_pass_ratio_pct = 20
 
 [selectors]
 use_high_vol = false

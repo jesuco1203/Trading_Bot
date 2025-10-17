@@ -30,6 +30,7 @@ class Trend(BaseStrategy):
         self.arms = 0 # Initialize arms counter
         self.reconf_bar = -1            # ← default
         self.waiting_pullback = False    # ← default
+        self.armed_side = 0
         self.blocks = {}
 
         # New parameters for BTC 4H Trend
@@ -72,162 +73,173 @@ class Trend(BaseStrategy):
     def warmup_bars(self) -> int:
         return max(60, self.arm_timeout)
 
-    def signal(self, ctx: dict) -> Signal:
-        
-        ctx['shared_context']['trend_armed'] = self.armed_level is not None
-
+    def _check_side(self, ctx: dict, side: int):
         df = ctx["df"]
         feats = ctx["feats"]
+        i = int(ctx.get("i", 0))
 
-        # === PRE-CÁLCULOS SEGUROS ===
-        i   = int(ctx.get("i", 0))
-        o   = float(df["open"].iat[-1])
-        h = float(df["high"].iat[-1])
-        low_price   = float(df["low"].iat[-1])
-        cl = float(df["close"].iat[-1])
-
-        atr_abs  = float(feats["atr"].iat[-1])
-        adx_now  = float(feats["adx"].iat[-1])
+        # Common calcs
+        o, h, low_price, cl = float(df["open"].iat[-1]), float(df["high"].iat[-1]), float(df["low"].iat[-1]), float(df["close"].iat[-1])
+        atr_abs = float(feats["atr"].iat[-1])
+        adx_now = float(feats["adx"].iat[-1])
         adx_prev = float(feats["adx"].iat[-2]) if len(feats["adx"]) >= 2 else adx_now
+        ma_fast = float(feats.get("ma_fast", df["close"].rolling(20).mean()).iat[-1])
+        ma_slow = float(feats.get("ma_slow", df["close"].rolling(50).mean()).iat[-1])
+        sep = abs(ma_fast - ma_slow) / max(abs(ma_slow), 1e-9)
 
-        ma_fast = feats.get("ma_fast")
-        ma_slow = feats.get("ma_slow")
-        if ma_fast is None:
-            ma_fast = df["close"].rolling(window=20, min_periods=20).mean()
-        if ma_slow is None:
-            ma_slow = df["close"].rolling(window=50, min_periods=50).mean()
+        # DYNAMIC GATES (HMM-driven)
+        regime  = ctx.get("regime_label")
+        pmax    = float(ctx.get("pmax", 0.0))
 
-        # === DIRECCIÓN Y SEPARACIÓN ===
-        fast = float(ma_fast.iat[-1])
-        slow = float(ma_slow.iat[-1])
-        sep  = abs(fast - slow) / max(abs(slow), 1e-9)
+        if regime == "trend" and pmax >= 0.70:
+            sep_min_dyn  = 0.0025
+        else:
+            sep_min_dyn  = 0.0040
 
-        # up: fast sube y slow no cae (>= permite mesetas)
-        up       = (ma_fast.iat[-1] > ma_fast.iat[-2]) and (ma_slow.iat[-1] >= ma_slow.iat[-2])
-        # cross_up: cruce alcista entre fast y slow (segunda vía)
-        cross_up = (ma_fast.iat[-2] <= ma_slow.iat[-2]) and (ma_fast.iat[-1] >  ma_slow.iat[-1])
+        adx_abs_ok = (adx_now >= 21.0) # Keep this for normal arming
+        adx_slope_ok = ((adx_now - adx_prev) >= 0.4 and adx_now >= 18.0)
+        adx_ok = adx_abs_ok or adx_slope_ok
 
-        # === IMPULSO DE BARRA ===
-        rng   = max(h - low_price, 1e-9)
-        rbody = max(cl - o, 0.0) / rng              # proporción de cuerpo alcista
-        long_wick  = (o - low_price)/rng >= 0.45            # mecha inferior larga (rechazo)
-        bar_expand = (h - low_price) >= 1.10 * atr_abs      # rango ≥ 1.1×ATR
+        # Side-dependent direction
+        if side > 0:
+            trend_dir_ok = (ma_fast > ma_slow) and (sep >= sep_min_dyn)
+        else:
+            trend_dir_ok = (ma_fast < ma_slow) and (sep >= sep_min_dyn)
 
-        # === UMBRALES ADAPTATIVOS ===
-        sep_min = 0.0035 if adx_now >= 30 else 0.0055
-        adx_abs_ok  = (adx_now >= 21.0)
-        adx_slope_ok= ((adx_now - adx_prev) >= 0.4 and adx_now >= 18.0)
+        # Side-dependent impulse
+        rng = max(h - low_price, 1e-9)
+        rbody = max(cl - o, 0.0) / rng if side > 0 else max(o - cl, 0.0) / rng
+        wick = (o - low_price) / rng if side > 0 else (h - o) / rng
+        bar_expand = (h - low_price) >= 1.20 * atr_abs # Stricter bar expand
+        impulse_ok = (rbody >= 0.35) or (wick >= 0.45) or bar_expand
 
-        # evidencia de impulso: cualquiera de los 3
-        impulse_ok   = (rbody >= 0.35) or long_wick or bar_expand
-        # dirección de tendencia: (sube y separa) O cruce
-        trend_dir_ok = ((up and sep >= sep_min) or cross_up)
-        # ADX: valor absoluto o pendiente
-        adx_ok       = (adx_abs_ok or adx_slope_ok)
+        # Momentum Override Logic
+        sc = ctx['shared_context']
+        now_i = ctx.get('i', 0)
+        sc.setdefault('mo_last_i', -10000)
+        sc.setdefault('mo_cooldown_until', -1)
+        sc.setdefault('mo_open', False)
+
+        sep_ok = sep >= 0.0040
+        adx_abs_ok_mo = adx_now >= 32.0
+        adx_slope_ok_mo = (adx_now - adx_prev) >= 0.5
+        momentum_override_conditions = bar_expand and sep_ok and (adx_abs_ok_mo or adx_slope_ok_mo)
+
+        mo_allowed = (
+            momentum_override_conditions
+            and not sc['mo_open']
+            and now_i - sc['mo_last_i'] >= 80
+            and now_i >= sc['mo_cooldown_until']
+        )
+
+        dbg = {
+            "bar_expand": bar_expand, "sep": float(sep), "sep_ok": sep_ok,
+            "adx_now": float(adx_now), "adx_prev": float(adx_prev),
+            "adx_abs_ok_mo": adx_abs_ok_mo, "adx_slope_ok_mo": adx_slope_ok_mo,
+            "mo_conditions": momentum_override_conditions, "mo_open": sc.get("mo_open"),
+            "mo_last_i": sc.get("mo_last_i"), "now_i": now_i, "mo_cooldown_until": sc.get("mo_cooldown_until"),
+        }
+        if not mo_allowed:
+            if momentum_override_conditions: # Log only when conditions are met but budget fails
+                logging.info(f"TREND MO BLOCK: {dbg}")
+        else:
+            logging.info(f"TREND MO ALLOW: {dbg}")
 
         arm_ok = trend_dir_ok and adx_ok and impulse_ok
+        origin = "normal"
 
-        momentum_override = adx_now >= 30 and bar_expand and sep >= 0.004
-        if momentum_override:
-            momentum_override = False # TEMP: no saltar el trend_dir gate
-            # arm_ok = True
-            # logging.debug(f"TREND-GATE i={i} momentum_override=True")
-
-        logging.info(f"TREND-GATE i={i} adx={adx_now:.1f} up={up} sep={sep:.4f} "
-             f"trend_dir_ok={trend_dir_ok} adx_ok={adx_ok} impulse_ok={impulse_ok} arm_ok={arm_ok}")
+        if mo_allowed:
+            arm_ok = True
+            origin = "momentum_override"
+            sc['mo_open'] = True
+            sc['mo_last_i'] = now_i
+            # Force entry
+            sl_pts = 2.2 * atr_abs
+            tp_pts = 1.8 * sl_pts
+            self._disarm()
+            logging.info(f"TREND MO ENTER (FORCED): i={i} side={side}")
+            return Signal("long" if side == 1 else "short", 0.8, sl_pts, tp_pts, reason="momentum_override_forced", rr=(tp_pts/sl_pts), origin='momentum_override')
 
         # contadores de motivo (diagnóstico)
-        self.blocks = getattr(self, 'blocks', {})
+        self.blocks.setdefault(side, {}).setdefault('gate_trend_dir_fail', 0)
+        self.blocks.setdefault(side, {}).setdefault('gate_adx_fail', 0)
+        self.blocks.setdefault(side, {}).setdefault('gate_impulse_fail', 0)
+
         if not arm_ok:
             if not trend_dir_ok:
-                self.blocks['gate_trend_dir_fail'] = self.blocks.get('gate_trend_dir_fail',0)+1
+                self.blocks[side]['gate_trend_dir_fail'] += 1
             if not adx_ok:
-                self.blocks['gate_adx_fail']       = self.blocks.get('gate_adx_fail',0)+1
+                self.blocks[side]['gate_adx_fail'] += 1
             if not impulse_ok:
-                self.blocks['gate_impulse_fail']   = self.blocks.get('gate_impulse_fail',0)+1
-            return Signal("flat", 0.0, None, None, reason="trend_gate_fail")
+                self.blocks[side]['gate_impulse_fail'] += 1
+            return None
 
-        if self.armed_level is None:
-            if arm_ok:
-                prev_high = float(df["high"].iat[-2])
-                h_now     = float(df["high"].iat[-1])
-                cl_now    = float(df["close"].iat[-1])
+        # Arming Logic
+        if self.armed_level is None or self.armed_side != side:
+            self.armed_level = cl if side > 0 else cl
+            self.armed_side = side
+            self.armed_bars = 0
+            logging.info(f"ARM i={i} side={side} lvl={self.armed_level:.2f}")
+            return None
 
-                level_raw = max(prev_high, cl_now)
-                self.armed_level = min(level_raw, h_now)
-                self.armed_bars  = 0
-                self.retested    = False
-                self.waiting_pullback = False
+        # Entry Logic
+        if self.armed_level is not None and self.armed_side == side:
+            self.armed_bars += 1
 
-                if self.armed_level > h_now:
-                    return Signal("flat", 0.0, None, None, reason="invalid_level_rearm")
+            # Retest Logic (now fully symmetrical)
+            RETEST_EPS = 0.0015
+            OVERSHOOT_ATR = 2.50
+            RETURN_EPS = 0.0011  # A2 TUNING
+            WICK_MIN = 0.50
+            TIMEOUT_BARS = 14
 
-                logging.info(f"ARM i={i} lvl={self.armed_level:.2f}")
-                return Signal("flat", 0.0, None, None, reason="armed")
-
-        if self.armed_level is not None:
-            RETEST_EPS      = 0.0015
-            MICRO_PULL_ATR  = 0.80
-            OVERSHOOT_ATR   = 2.50
-            RETURN_EPS      = 0.0007  # 0.07% (más estricto)
-            WICK_MIN        = 0.50
-            TIMEOUT_BARS    = 14
-
-            ma20 = feats.get("ma20", df["close"].rolling(20).mean().iat[-1])
-
-            touched_level = (low_price <= self.armed_level * (1 - RETEST_EPS) <= h)
-            touched_ma20  = (abs(ma20 - self.armed_level)/max(self.armed_level,1e-9) <= 0.003) and (low_price <= ma20 <= h)
-
-            dist_low_atr = abs(low_price - self.armed_level) / max(atr_abs, 1e-9)
-            lower_wick   = (o - low_price) / max(h - low_price, 1e-9)
-            micro_pull   = (dist_low_atr <= MICRO_PULL_ATR) and (lower_wick >= WICK_MIN)
-
-            overshoot     = (self.armed_level - low_price) / max(atr_abs, 1e-9) >= OVERSHOOT_ATR
-            return_close  = cl >= self.armed_level * (1 - RETURN_EPS)
-            overshoot_rej = overshoot and return_close and (lower_wick >= WICK_MIN)
-
-            self.retested = bool(touched_level or touched_ma20 or micro_pull or overshoot_rej)
-            if not self.retested:
-                self.armed_bars += 1
-
-                CONT_ADV_ATR  = 0.80   # antes 0.60
-                CONT_MAX_BARS = 5      # acorta ventana de continuación
-                bar_expand = (h - low_price) >= 1.20 * atr_abs
-                rbody_pct  = max(cl - o, 0.0) / max(h - low_price, 1e-9)
-
-                if (self.armed_bars <= CONT_MAX_BARS
-                    and (h - self.armed_level) / max(atr_abs,1e-9) >= CONT_ADV_ATR
-                    and adx_now >= 28.0
-                    and sep >= 0.0035
-                    and (bar_expand or rbody_pct >= 0.55)):
-                    swing_low = float(df["low"].iloc[-7:-1].min())
-                    sl_pts = max(cl - swing_low, 2.2 * atr_abs)
-                    tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
-                    partial_tp_pts = 1.0 * atr_abs
-                    partial_sl_offset_atr_mult = 0.3
-                    rr = tp_pts / max(sl_pts, 1e-9)
-                    self._disarm()
-                    return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult,
-                                  reason="continuation_enter", rr=rr)
-
-                if self.armed_bars > TIMEOUT_BARS:
-                    self._disarm()
-                    return Signal("flat", 0.0, None, None, reason="retest_timeout")
-
-                logging.info(f"RETEST_DEBUG i={i} lvl={self.armed_level:.2f} ma20={ma20:.2f} "
-                             f"dist_low_atr={dist_low_atr:.2f} wick={lower_wick:.2f} "
-                             f"overshoot={overshoot} return_close={return_close} retested={self.retested}")
-                return Signal("flat", 0.0, None, None, reason="waiting_retest")
+            dist_to_level = (cl - self.armed_level) * side
             
-            if self.retested:
-                swing_low = float(df["low"].iloc[-7:-1].min())
-                sl_pts = max(cl - swing_low, 2.0 * atr_abs)
-                tp_pts = max(1.8 * sl_pts, 2.6 * atr_abs)
-                partial_tp_pts = 1.0 * atr_abs
-                partial_sl_offset_atr_mult = 0.3
-                rr = tp_pts / max(sl_pts, 1e-9)
+            # Overshoot and rejection
+            overshoot_pts = (self.armed_level - low_price) if side > 0 else (h - self.armed_level)
+            overshoot = overshoot_pts / max(atr_abs, 1e-9) >= OVERSHOOT_ATR
+            return_close = (cl >= self.armed_level * (1 - RETURN_EPS)) if side > 0 else (cl <= self.armed_level * (1 + RETURN_EPS))
+            overshoot_rej = overshoot and return_close and (wick >= WICK_MIN)
+
+            retested = overshoot_rej or (abs(dist_to_level) / self.armed_level) < RETEST_EPS
+
+            if retested:
+                sl_pts = 2.0 * atr_abs
+                tp_pts = 1.8 * sl_pts
                 self._disarm()
-                return Signal("long", 0.7, sl_pts, tp_pts, partial_tp_pts, partial_sl_offset_atr_mult,
-                              reason="pullback_reject_enter", rr=rr)
+                return Signal("long" if side == 1 else "short", 0.7, sl_pts, tp_pts, reason="pullback_reject_enter", rr=(tp_pts/sl_pts), origin=origin)
+
+            # Continuation Logic
+            CONT_ADV_ATR = 0.80
+            CONT_MAX_BARS = 6      # acorta ventana de continuación
+            rbody_th = 0.50 if adx_now >= 30 else 0.55
+            adv_from_lvl = (cl - self.armed_level) * side / max(atr_abs, 1e-9)
+
+            if self.armed_bars <= CONT_MAX_BARS and adv_from_lvl >= CONT_ADV_ATR and adx_now >= 28.0 and (bar_expand or rbody >= rbody_th):
+                sl_pts = 2.2 * atr_abs
+                tp_pts = 1.8 * sl_pts
+                self._disarm()
+                return Signal("long" if side == 1 else "short", 0.7, sl_pts, tp_pts, reason="continuation_enter", rr=(tp_pts/sl_pts), origin=origin)
+
+            if self.armed_bars > TIMEOUT_BARS:
+                self._disarm()
+
+        return None
+
+    def signal(self, ctx: dict) -> Signal:
+        if self.cooldown > 0:
+            self.cooldown -= 1
+            return Signal("flat", 0.0, None, None, reason="cooldown")
+
+        # Check for long signal
+        long_signal = self._check_side(ctx, side=1)
+        if long_signal:
+            return long_signal
+
+        # Check for short signal
+        if self.allow_shorts:
+            short_signal = self._check_side(ctx, side=-1)
+            if short_signal:
+                return short_signal
 
         return Signal("flat", 0.0, None, None, reason="no_setup")

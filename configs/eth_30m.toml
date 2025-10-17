@@ -11,8 +11,9 @@ starting_equity = 10000.0
 risk_per_trade_pct = 0.01
 
 [costs]
-commission_rate = 0.0005 # 0.05%
-slippage_min = 0.0001 # 0.01%
+taker_fee = 0.0005
+maker_fee = 0.0002
+slippage_bps = 1.0 # 1 basis point = 0.01%
 
 [hmm]
 n_states = 3

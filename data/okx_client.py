@@ -15,6 +15,5 @@ def get_ohlcv(symbol: str, timeframe: str, limit: int = 3000,
     # normaliza columnas esperadas por build_features/main
     df = df.rename(columns={"ts":"ts","open":"open","high":"high","low":"low","close":"close","volume":"volume"})
     df = df.sort_values("ts").reset_index(drop=True)
-    if limit and limit > 0:
-        df = df.tail(limit).reset_index(drop=True)
+
     return df

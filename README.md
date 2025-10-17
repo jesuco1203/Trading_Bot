@@ -22,6 +22,9 @@ El trading de criptomonedas es altamente riesgoso. Este software se proporciona 
 -   **Adquisición de Datos**: Incluye un script (`scripts/okx_backfill.py`) para descargar y almacenar datos históricos de OKX en formato Parquet, optimizado para lecturas rápidas.
 -   **Estructura Modular**: El código está organizado en módulos claros y cohesivos (`data`, `features`, `regime`, `strategies`, `selector`, `risk`, `execution`, `monitoring`).
 
+## Notas de backtesting (nov 2024)
+-   TrendV2 AB (windows 2000-4000 y 4000-6000) confirma que `partial_take_r=1.0` supera a 0.85R; artefactos: `trades_BTC-USDT-SWAP_30m_window_{2000-4000,4000-6000}_{1760678994,1760678999,1760679005,1760679010}.csv`.
+
 ## Requisitos Previos
 
 1.  **Python 3.8 o superior.**
@@ -94,3 +97,5 @@ Los siguientes archivos corresponden a una versión anterior del bot y ya no son
 - `strategy.py`
 - `backtest.py`
 - `okx_client.py` (el cliente CCXT en la raíz)
+
+Legacy moved to archive/, la fuente de verdad es main.py, configs/*.toml, strategies/, execution/, features/.

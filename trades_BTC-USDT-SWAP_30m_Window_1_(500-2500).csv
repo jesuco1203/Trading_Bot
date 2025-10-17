@@ -1,7 +1,0 @@
-ts,symbol,tf,strategy,side,entry,exit,exit_reason,partial,pnl,rr,bars_open,mfe_atr,mae_atr
-691,,,MeanRevert,,,,,False,0.0,1.5000000000000002,,,
-692,,,MeanRevert,,,,,True,-617399.4307905555,,,,
-692,,,MeanRevert,,,,sl,False,286.24950639378767,,1.0,1.3522,0.3668
-2401,,,Trend,,,,,False,0.0,1.8,,,
-2403,,,Trend,,,,,True,648.5903563900713,,,,
-2403,,,Trend,,,,sl,False,431.07086320499883,,2.0,1.1282,0.4595

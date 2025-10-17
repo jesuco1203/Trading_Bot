@@ -1,5 +1,22 @@
-venv/
+# Python
 __pycache__/
 *.pyc
+.pyc_cache/
+.venv/
+venv/
+.env
 .DS_Store
+
+# Artefactos y datos
+*.csv
+logs/
 *.log
+artifacts/
+.locks/
+archive/
+data_alt/
+
+# Notebooks/IDEs
+.ipynb_checkpoints/
+.vscode/
+.idea/

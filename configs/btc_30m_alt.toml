@@ -113,8 +113,8 @@ adx_rise_min_delta = 1.0
 recent_breakout_k = 3
 ema_fast = 9
 ema_slow = 21
-min_adx             = 15
-break_eps_atr = 0.0024
+min_adx = 5
+break_eps_atr = 0.0024  # Opción B
 vol_ratio = 0.95
 slope_lookback = 1
 volatility_min_ratio = 0.2
@@ -126,10 +126,10 @@ vol_ratio_min = 0.80
 vol_ratio_pct = 0.10
 min_signals_per_window = 8
 relax_order = ["volume", "adx_rising"]
-relax_progress_pct = 0.50
+relax_progress_pct = 0.50   # dispara el primer relax si a mitad del slice < 4 señales
 diag_triggers = true
 allow_when_bias_neutral = true
-htf_neutral_k_atr = 0.6
+htf_neutral_k_atr = 0.6   # banda neutral de 0.5×ATR_HTF
 
 sl_atr_mult = 1.7
 sl_swing_lookback = 5
@@ -141,29 +141,21 @@ reentry_size_mult = 0.5
 atr_pct_high = 0.015
 atr_pct_low  = 0.006
 
+# Anti-chop
 adx_rising_bars = 3
-structure_confirm = true
+structure_confirm = true  # exige HH/HL para long, LH/LL para short
 
+# Re-entrada
 reentry_enabled = true
 reentry_on_last_sl = true
 reentry_max_per_signal = 1
 reentry_window = 16
-reentry_sl_bars_open_max = 16
-reentry_sl_bars_open_relax = 4
+reentry_sl_bars_open_max = 2
 reentry_eps_atr = 0.0010
-reentry_rr_min = 0.7
-reentry_adx_uplift = true
-reentry_exec_enabled = false
 sl_swing_pad_atr = 0.2
-don_body_min_atr = 0.18
+don_body_min_atr = 0.10
 sl_mode = "capped"
 sl_swing_extra_atr_cap = 0.70
-ema_min_sep_atr = 0.18
-adx_slope_n     = 3
-ema_need_any    = true
-don_adx_slope_n     = 2
-don_need_adx_rise = true
-don_ema_sep_atr = 0.15
 relaxer_enabled = false
 
 [exits]

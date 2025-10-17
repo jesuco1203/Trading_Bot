@@ -65,7 +65,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     out["rsi14"] = _rsi(c, 14)
     out["z_score_50"] = _zscore(c, 50)
 
+    out["ema_10"] = c.ewm(span=10, adjust=False).mean().bfill()
     out["sma20"] = c.rolling(20).mean().bfill()
+    out["ema_50"] = c.ewm(span=50, adjust=False).mean().bfill()
+    out["ema_200"] = c.ewm(span=200, adjust=False).mean().bfill()
     out["std20"] = c.rolling(20).std().bfill()
 
     from .ict import add_fvg_columns

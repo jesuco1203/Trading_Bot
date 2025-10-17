@@ -17,8 +17,9 @@ max_consecutive_losses_trend = 2
 max_consecutive_losses_mr = 2
 
 [costs]
-commission_rate = 0.0005 # 0.05%
-slippage_min = 0.0001 # 0.01%
+taker_fee = 0.0005
+maker_fee = 0.0002
+slippage_bps = 1.0 # 1 basis point = 0.01%
 
 [hmm]
 n_states = 3

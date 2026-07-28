@@ -23,6 +23,8 @@ import time
 from typing import Any, Dict, Tuple
 from strategies.trend_v2 import TrendV2
 from regime.bias import regime_bias
+from risk.risk_manager import RiskManager
+from utils.perf import compute_pf_expectancy
 
 # -------- Logging básico seguro
 logging.basicConfig(
@@ -204,12 +206,20 @@ def run_single_backtest(
     exits_cfg = config.get("exits", {})
     risk_cfg = config.get("risk", {})
     costs_cfg = config.get("costs", {})
+    risk_manager_cfg = config.get("risk_manager", {})
 
     def _cfg_get(section: Dict[str, Any], key: str, default: float) -> float:
         try:
             return float(section.get(key, default))
         except Exception:
             return default
+
+    rm_kwargs = {}
+    for key in ("max_dd_pct_session", "max_consecutive_losses", "max_daily_trades",
+                "cooldown_after_loss_bars", "cooldown_after_close_bars"):
+        if key in risk_manager_cfg:
+            rm_kwargs[key] = risk_manager_cfg[key]
+    risk_manager = RiskManager(**rm_kwargs) if rm_kwargs else RiskManager()
 
     broker = broker_cls(
         initial_capital=_cfg_get(risk_cfg, "starting_equity", 10_000.0),
@@ -228,6 +238,7 @@ def run_single_backtest(
         partial_take_r=_cfg_get(trend_cfg, "partial_take_r", 0.0),
         partial_take_frac=_cfg_get(trend_cfg, "partial_take_frac", 0.0),
         partial_be_eps_atr=_cfg_get(trend_cfg, "partial_be_eps_atr", trend_cfg.get("reentry_eps_atr", 0.0)),
+        risk_manager=risk_manager,
     )
 
     logging.info("--- Running Backtest for %s %s (%s) ---", symbol, timeframe, window_label)
@@ -263,6 +274,27 @@ def run_single_backtest(
         int(getattr(trend_strategy, "warmup_bars", lambda: 0)() or 0),
     )
 
+    htf_cfg = config.get("htf", {})
+    htf_mode = str(htf_cfg.get("mode", "off"))
+    htf_require = bool(htf_cfg.get("require_htf", True))
+    htf_blocked = 0
+    if htf_mode != "off":
+        from features.htf import htf_gate
+
+    trig_cfg = config.get("trigger", {})
+    trig_mode = str(trig_cfg.get("mode", "off"))
+    trig_blocked = 0
+    if trig_mode != "off":
+        from features.triggers import build_all, trigger_gate
+        # Antes de publicar df_base en shared_context: el broker lo usa para
+        # localizar la barra de entrada y no debe ver una copia distinta.
+        df_base = df_base.join(build_all(
+            df_base, df_base["atr"],
+            multi_n=int(trig_cfg.get("multi_n", 3)),
+            thrust_k=float(trig_cfg.get("thrust_k", 0.8)),
+            thrust_pos=float(trig_cfg.get("thrust_pos", 0.75)),
+        ))
+
     shared_context: Dict[str, Any] = {"df_base": df_base}
 
     idx = list(df_base.index)
@@ -287,6 +319,8 @@ def run_single_backtest(
             atr_value = float(atr.iloc[prev_index])
 
         if broker.exposure() == 0:
+            if risk_manager and not risk_manager.can_open_new_trade(i):
+                continue
             market_ctx = {
                 "open": df_base["open"],
                 "high": df_base["high"],
@@ -313,6 +347,22 @@ def run_single_backtest(
             }
             signal = trend_strategy.signal(context)
             side = getattr(signal, "side", "flat") if signal else "flat"
+
+            # Filtro HTF: se aplica DESPUÉS de generar la señal y sin tocar la
+            # estrategia, para que el único cambio frente al baseline sea el
+            # filtro. Así la ablación mide el filtro, no un efecto de refactor.
+            if signal and side in ("long", "short") and htf_mode != "off":
+                if not htf_gate(df_base.iloc[i], side, htf_mode, htf_require):
+                    htf_blocked += 1
+                    signal, side = None, "flat"
+
+            # Gatillo de acción del precio, misma mecánica que el gate HTF:
+            # confirma (o no) la señal ya generada, sin tocar la estrategia.
+            if signal and side in ("long", "short") and trig_mode != "off":
+                if not trigger_gate(df_base.iloc[i], side, trig_mode):
+                    trig_blocked += 1
+                    signal, side = None, "flat"
+
             if signal and side in ("long", "short"):
                 sl_pts = float(getattr(signal, "sl_pts", 0.0) or 0.0)
                 if sl_pts > 0:
@@ -396,7 +446,23 @@ def run_single_backtest(
         payload: Dict[str, int] = {}
         tc = getattr(trend_strategy, "trig_counts", None)
         if isinstance(tc, dict):
-            payload.update({k: int(tc.get(k, 0) or 0) for k in ("don_L", "don_S", "ema_L", "ema_S")})
+            payload.update({
+                k: int(tc.get(k, 0) or 0)
+                for k in (
+                    "don_L",
+                    "don_S",
+                    "ema_L",
+                    "ema_S",
+                    "reentry_checks",
+                    "reentry_eps_rejects",
+                    "reentry_rr_rejects",
+                    "reentry_adx_rejects",
+                    "don_body_rejects_L",
+                    "don_body_rejects_S",
+                    "don_break_rejects_L",
+                    "don_break_rejects_S",
+                )
+            })
         dc = getattr(trend_strategy, "debug_counts", None)
         if isinstance(dc, dict):
             payload.update({k: int(dc.get(k, 0) or 0) for k in (
@@ -500,38 +566,72 @@ def run_single_backtest(
         logging.debug("No se pudo imprimir TriggerCounts", exc_info=True)
 
     trades = list(getattr(broker, "trades", []))
-    closes = [t for t in trades if not t.get("partial")]
-    if closes:
-        max_rr = max(float(t.get("max_rr", 0.0) or 0.0) for t in closes)
-        sl_le_2 = sum(
-            1
-            for t in closes
-            if t.get("exit_reason") in {"sl", "be"} and int(t.get("bars_open", 0) or 0) <= 2
-        )
+    trades_df = pd.DataFrame(trades)
+    # ops_df: TODAS las filas cerradas, incluidas las tomas parciales. PF y
+    # expectancy se calculan por operación (compute_pf_expectancy agrupa por
+    # trade_id), así que el parcial suma a su trade padre en vez de perderse.
+    ops_df = trades_df.copy()
+    if not ops_df.empty and "exit_reason" in ops_df.columns:
+        ops_df = ops_df[ops_df["exit_reason"].notna()]
+
+    # closes_df: sólo cierres finales. Es la vista correcta para métricas que
+    # describen el cierre en sí (max_rr alcanzado, salidas por SL tempranas).
+    closes_df = ops_df.copy()
+    if not closes_df.empty and "exit_reason" in closes_df.columns:
+        closes_df = closes_df[closes_df["exit_reason"] != "tp_partial"]
+
+    profit_factor, expectancy = compute_pf_expectancy(ops_df)
+    max_rr = 0.0
+    sl_le_2 = 0
+    if not closes_df.empty:
+        max_rr = float(closes_df.get("max_rr", pd.Series(dtype=float)).fillna(0.0).max())
+        exit_reason = closes_df.get("exit_reason")
+        bars_open_series = closes_df.get("bars_open")
+        if exit_reason is not None and bars_open_series is not None:
+            mask = exit_reason.isin(["sl", "be"]) & (bars_open_series.fillna(0).astype(int) <= 2)
+            sl_le_2 = int(mask.sum())
 
     reentry_armed = int(getattr(trend_strategy, "reentry_armed_count", reentry_armed))
     reentry_exec = int(getattr(trend_strategy, "reentry_exec_count", reentry_exec))
 
     window_id = window_label.split()[-1].strip("()").replace(" ", "")
-    csv_name = f"trades_{symbol}_{timeframe}_window_{window_id}_{run_ts}.csv"
+    # Los CSV van a un directorio propio: un backtest de varias ventanas y varios
+    # brazos genera decenas de ficheros y la raíz del repo se vuelve inusable.
+    out_dir = str(config.get("export", {}).get("summary_dir", "reports"))
+    os.makedirs(out_dir, exist_ok=True)
+    csv_name = os.path.join(
+        out_dir, f"trades_{symbol}_{timeframe}_window_{window_id}_{run_ts}.csv"
+    )
     shared_context["csv_name"] = csv_name
 
     try:
-        trades_df = pd.DataFrame(trades)
         trades_df.to_csv(csv_name, index=False)
         logging.info("Trades exportado a %s (%s filas)", csv_name, len(trades_df))
     except Exception:
         logging.exception("No se pudo exportar CSV %s", csv_name)
 
+    pf_str = "inf" if profit_factor == float("inf") else f"{profit_factor:.2f}"
+    expectancy_str = f"{expectancy:.2f}"
+
+    if False and hasattr(risk_manager, "debug_summary"):
+        try:
+            risk_manager.debug_summary()
+        except Exception:
+            logging.exception("RiskManager.debug_summary failed")
+
     print(
-        f"[SUMMARY] run_ts={run_ts} window={window_id} trades={entries} "
+        f"[SUMMARY] run_ts={run_ts} window={window_id} htf={htf_mode} "
+        f"htf_blocked={htf_blocked} trig={trig_mode} trig_blocked={trig_blocked} "
+        f"trades={entries} "
         f"SL_le_2={sl_le_2} partials={partials} reentry_armed={reentry_armed} "
-        f"reentry_exec={reentry_exec} max_rr≈{round(float(max_rr or 0.0), 2)}"
+        f"reentry_exec={reentry_exec} max_rr≈{round(float(max_rr or 0.0), 2)} "
+        f"PF={pf_str} Expectancy={expectancy_str}"
     )
+    print(f"CSV: {csv_name}")
 
     return {
         "entries": entries,
-        "exits": len(closes),
+        "exits": int(len(closes_df)),
         "partials": partials,
         "flips": flips,
         "sl_le_2": sl_le_2,
@@ -539,6 +639,7 @@ def run_single_backtest(
         "reentry_exec": reentry_exec,
         "max_rr": float(max_rr or 0.0),
         "csv_name": csv_name,
+        "trend_strategy": trend_strategy, # Return the strategy object for debug info
     }
 
 
@@ -590,7 +691,6 @@ def _parse_override_value(raw: str):
 def apply_overrides(cfg: Dict[str, Any], overrides: list[str]) -> None:
     if not overrides:
         return
-    trend_cfg = cfg.setdefault("trend_v2", {})
     for item in overrides:
         if "=" not in item:
             raise SystemExit(f"--override espera key=value, recibí: {item!r}")
@@ -598,13 +698,45 @@ def apply_overrides(cfg: Dict[str, Any], overrides: list[str]) -> None:
         key = key.strip()
         if not key:
             raise SystemExit(f"--override inválido (clave vacía): {item!r}")
-        trend_cfg[key] = _parse_override_value(value)
+        key_path = [segment.strip() for segment in key.split(".") if segment.strip()]
+        if not key_path:
+            raise SystemExit(f"--override inválido (clave vacía): {item!r}")
+        if len(key_path) == 1:
+            target = cfg.setdefault("trend_v2", {})
+            final_key = key_path[0]
+        else:
+            target = cfg
+            for part in key_path[:-1]:
+                next_target = target.get(part)
+                if next_target is None or not isinstance(next_target, dict):
+                    next_target = {}
+                    target[part] = next_target
+                target = next_target
+            final_key = key_path[-1]
+        target[final_key] = _parse_override_value(value)
 
 
 def main(config_path: str, limit_bars: int | None, start_index: int | None, overrides: list[str] | None = None) -> None:
     cfg = load_config(config_path)
     apply_overrides(cfg, overrides or [])
     df, symbol, timeframe = load_ohlcv(cfg)
+
+    # Sesgo HTF sobre el dataset COMPLETO, antes de trocear en ventanas: la
+    # EMA200 diaria necesita 200 días (1200 barras de 4h) y calcularla dentro
+    # de una ventana de 2000 se comería más de la mitad de la muestra.
+    htf_mode = str(cfg.get("htf", {}).get("mode", "off"))
+    if htf_mode != "off":
+        from features.htf import add_htf_bias
+        htf_cfg = cfg.get("htf", {})
+        df = add_htf_bias(
+            df,
+            ema_len_4h=int(htf_cfg.get("ema_len_4h", 200)),
+            ema_len_d=int(htf_cfg.get("ema_len_d", 200)),
+            ema_len_w=int(htf_cfg.get("ema_len_w", 20)),
+        )
+        logging.info("HTF bias mode=%s | cobertura d=%.1f%% w=%.1f%%", htf_mode,
+                     100 * df["htf_bias_d"].notna().mean(),
+                     100 * df["htf_bias_w"].notna().mean())
 
     # Telemetría de config
     print_cfg_effective(cfg)
@@ -625,6 +757,17 @@ def main(config_path: str, limit_bars: int | None, start_index: int | None, over
             (4000, 6000, "Window 3 (4000-6000)"),
         ]
 
+    # Define _pct helper function for percentiles
+    def _pct(arr, p):
+        if not arr: return 0.0
+        xs = sorted(arr)
+        n = len(xs)
+        k = (p / 100.0) * (n - 1)
+        f = int(k)
+        c = min(f + 1, n - 1)
+        w = k - f
+        return xs[f] * (1 - w) + xs[c] * w
+
     # Verifica rango
     n = len(df)
     for start, end, label in windows:
@@ -638,7 +781,24 @@ def main(config_path: str, limit_bars: int | None, start_index: int | None, over
         # Slice por ventana (copia para evitar SettingWithCopy warns)
         df_win = df.iloc[start:end].copy()
         try:
-            _ = run_single_backtest(cfg, df_win, symbol, timeframe, label, run_ts)
+            result = run_single_backtest(cfg, df_win, symbol, timeframe, label, run_ts)
+            trend_strategy = result.get("trend_strategy")
+            import strategies.trend_v2 # Import the module to access its global DEBUG_REENTRY flag
+            if trend_strategy and hasattr(trend_strategy, "_debug_reentry_data") and strategies.trend_v2.DEBUG_REENTRY:
+                dbg_data = trend_strategy._debug_reentry_data
+                
+                reentry_lateness_debug = {
+                    "late_events": dbg_data["lateness_events"],
+                    "lateness_p50": round(_pct(dbg_data["lateness_values"], 50), 2),
+                    "lateness_p75": round(_pct(dbg_data["lateness_values"], 75), 2),
+                    "bars_open_p50": round(_pct(dbg_data["bars_open_at_check"], 50), 2),
+                    "bars_open_p75": round(_pct(dbg_data["bars_open_at_check"], 75), 2),
+                    "eps_p50": round(_pct(dbg_data["eps_values"], 50), 4),
+                    "eps_p75": round(_pct(dbg_data["eps_values"], 75), 4),
+                    "eps_thr": dbg_data["eps_threshold"],
+                }
+                print("REENTRY_LATENESS_DEBUG", reentry_lateness_debug)
+
         except SystemExit:
             # Propagamos errores críticos (importantes para no dejar estado corrupto)
             raise

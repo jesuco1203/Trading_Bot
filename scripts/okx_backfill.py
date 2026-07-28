@@ -11,26 +11,64 @@ try:
 except ImportError:
     raise SystemExit("Instala: pip install ccxt pandas pyarrow")
 
+# OKX usa minuscula por debajo de 1H y mayuscula a partir de 1H.
+_BAR = {
+    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
+    "1d": "1D", "1w": "1W",
+    # OKX cierra 1D/1W en horario Hong Kong (16:00 UTC). Estos alias cierran en UTC.
+    "1dutc": "1Dutc", "1wutc": "1Wutc", "6hutc": "6Hutc", "12hutc": "12Hutc",
+}
+
 def _ms(d: dt.datetime) -> int: return int(d.timestamp()*1000)
 def _mk(p: str): pathlib.Path(p).mkdir(parents=True, exist_ok=True)
 
-def fetch_ohlcv_full(ex, symbol, timeframe, since_ms, until_ms, limit=200):
-    out, cursor = [], since_ms
-    while True:
-        batch = ex.fetch_ohlcv(symbol, timeframe=timeframe, since=cursor, limit=limit)
+def inst_id(s: str) -> str:
+    """'BTC-USDT-SWAP' o 'BTC/USDT:USDT' -> instId de OKX."""
+    if "/" in s or ":" in s:
+        base = s.split("/")[0]
+        return f"{base}-USDT-SWAP"
+    return s
+
+def fetch_ohlcv_full(ex, symbol, timeframe, since_ms, until_ms, limit=100):
+    """
+    Descarga histórico profundo vía /market/history-candles.
+
+    El endpoint por defecto (fetch_ohlcv / market/candles) solo sirve las ~1440
+    velas más recientes y devuelve vacío ante un `since` antiguo. history-candles
+    pagina hacia ATRÁS con `after` (ms exclusivo) y llega hasta el listado del
+    instrumento (~dic-2019 para BTC-USDT-SWAP).
+    """
+    bar = _BAR.get(timeframe.lower())
+    if bar is None:
+        raise SystemExit(f"Timeframe no soportado por OKX: {timeframe}")
+
+    iid = inst_id(symbol)
+    rows, cursor = [], until_ms
+    while cursor > since_ms:
+        resp = ex.publicGetMarketHistoryCandles({
+            "instId": iid, "bar": bar, "after": str(cursor), "limit": str(limit),
+        })
+        batch = resp.get("data") or []
         if not batch:
             break
-        out += batch
-        last = batch[-1][0]
-        cursor = last + 1
-        if cursor >= until_ms:
-            break
+        # OKX devuelve [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm], nuevo->viejo.
+        for r in batch:
+            if len(r) > 8 and r[8] != "1":
+                continue  # vela aún abierta
+            rows.append([int(r[0])] + [float(x) for x in r[1:6]])
+        oldest = int(batch[-1][0])
+        if oldest >= cursor:
+            break  # sin progreso: corta en vez de girar en vacío
+        cursor = oldest
         time.sleep(ex.rateLimit/1000.0)
-    if not out:
+
+    if not rows:
         return pd.DataFrame(columns=["ts","open","high","low","close","volume"])
-    df = pd.DataFrame(out, columns=["ts","open","high","low","close","volume"])
+    df = pd.DataFrame(rows, columns=["ts","open","high","low","close","volume"])
+    df = df[df["ts"] >= since_ms]
     df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
-    return df
+    return df.drop_duplicates("ts").sort_values("ts").reset_index(drop=True)
 
 def save_parquet(df, path):
     if df.empty:
@@ -56,17 +94,17 @@ def main():
     args = ap.parse_args()
 
     ex = ccxt.okx({"enableRateLimit": True})
-    until = dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc)
+    until = dt.datetime.now(dt.timezone.utc)
     since = until - dt.timedelta(days=30*args.months)
 
     for sym in [s.strip() for s in args.symbols.split(",") if s.strip()]:
-        ccxt_sym = norm_sym(sym)
         for tf in [t.strip() for t in args.timeframes.split(",") if t.strip()]:
-            print(f"[backfill] {ccxt_sym} {tf} ({args.months}m)")
-            df = fetch_ohlcv_full(ex, ccxt_sym, tf, _ms(since), _ms(until))
+            print(f"[backfill] {inst_id(sym)} {tf} ({args.months}m)", flush=True)
+            df = fetch_ohlcv_full(ex, sym, tf, _ms(since), _ms(until))
             out = os.path.join(args.root, sym.replace("/", "_").replace(":", "_"), tf, "ohlcv.parquet")
             save_parquet(df, out)
-            print(f"  -> {len(df):,} rows -> {out}")
+            span = f"{df['ts'].iloc[0]} -> {df['ts'].iloc[-1]}" if not df.empty else "vacío"
+            print(f"  -> {len(df):,} rows | {span} -> {out}", flush=True)
 
 if __name__ == "__main__":
     main()

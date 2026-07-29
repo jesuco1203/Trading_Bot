@@ -1,0 +1,147 @@
+# DOGE 4h — OUT-OF-SAMPLE puro. Idéntico a btc_4h.toml salvo el símbolo.
+# Objetivo: medir TrendV2 en 4H con LOS MISMOS parámetros que btc_30m.toml,
+# para aislar el efecto del timeframe antes de tocar nada más.
+# Sólo cambian: símbolo/timeframe, ruta de datos y warmup.
+#
+# NOTA: load_ohlcv() (main.py:86-108) lee market.symbol / market.timeframe en
+# SINGULAR e ignora [data].root — sólo prueba data/{sym}/{tf} y data_alt/{sym}/{tf}.
+# Por eso la ruta va explícita en [data].path.
+
+[market]
+symbol = "DOGE-USDT-SWAP"
+timeframe = "4h"
+symbols = ["DOGE-USDT-SWAP"]
+timeframes = ["4h"]
+tick_value = 0.01
+
+[data]
+path = "data/okx/DOGE-USDT-SWAP/4h/ohlcv.parquet"
+root = "data/okx"
+
+[features]
+atr_period = 14
+# 250 barras: cubre EMA200 de 4h (fase 2) sin recortar más muestra de la necesaria.
+warmup_bars = 250
+
+[risk]
+starting_equity = 10000.0
+risk_per_trade_pct = 0.01
+max_dd_pct_session = 0.06
+max_consecutive_losses = 4
+max_dd_pct_trend = 0.05
+max_dd_pct_mr = 0.02
+max_consecutive_losses_trend = 2
+max_consecutive_losses_mr = 2
+
+[costs]
+taker_fee = 0.0005
+maker_fee = 0.0002
+slippage_bps = 1.0
+
+[trend_v2]
+# === IDÉNTICO a configs/btc_30m.toml — no tocar en el baseline ===
+n_don = 20
+require_trend = false
+require_adx_rising = false
+adx_rise_lookback = 3
+adx_rise_min_delta = 1.0
+recent_breakout_k = 3
+ema_fast = 9
+ema_slow = 21
+min_adx             = 15
+break_eps_atr = 0.0024
+vol_ratio = 0.95
+slope_lookback = 1
+volatility_min_ratio = 0.2
+pullback_atr = 0.2
+volatility_lookback = 50
+vola_min_ratio = 0.5
+vol_lookback = 20
+vol_ratio_min = 0.80
+vol_ratio_pct = 0.10
+min_signals_per_window = 8
+relax_order = ["volume", "adx_rising"]
+relax_progress_pct = 0.50
+diag_triggers = true
+allow_when_bias_neutral = true
+htf_neutral_k_atr = 0.6
+
+sl_atr_mult = 1.7
+sl_swing_lookback = 5
+trail_atr_mult = 1.7
+trail_activate_r = 1.0
+partial_take_r = 1.0
+partial_take_frac = 0.25
+reentry_size_mult = 0.5
+atr_pct_high = 0.015
+atr_pct_low  = 0.006
+
+adx_rising_bars = 3
+structure_confirm = true
+
+reentry_enabled = true
+reentry_on_last_sl = true
+reentry_max_per_signal = 1
+reentry_window = 16
+reentry_sl_bars_open_max = 16
+reentry_sl_bars_open_relax = 4
+reentry_eps_atr = 3.0
+reentry_rr_min = 0.6
+reentry_adx_uplift = true
+reentry_exec_enabled = true
+sl_swing_pad_atr = 0.2
+don_body_min_atr = 0.25
+sl_mode = "capped"
+sl_swing_extra_atr_cap = 0.70
+ema_min_sep_atr = 0.22
+adx_slope_n     = 3
+ema_need_any    = true
+don_adx_slope_n     = 2
+don_need_adx_rise = true
+don_ema_sep_atr = 0.20
+relaxer_enabled = false
+
+[exits]
+sl_atr          = 0.9
+tp_final_r      = 1.2
+be_trigger_atr  = 0.5
+trail_atr_mult  = 1.7
+# 60 barras de 4h = 10 días. En 30m eran 30h. Se deja igual en el baseline
+# a propósito; rescalarlo es un experimento aparte, no parte de la referencia.
+time_stop_bars  = 60
+tp_r_primary     = 0.8
+tp_primary_ratio = 0.5
+
+[cooldown]
+after_loss_streak = 6
+after_kill_switch = 24
+
+[risk_manager]
+cooldown_after_loss_bars = 0
+max_dd_pct_session = 5
+max_daily_trades = 30
+max_consecutive_losses = 5
+
+[telemetry]
+audit_csv = true
+trades_csv = true
+stats_console = true
+count_trigger_raw = true
+count_passed_filters = true
+log_regime_bias = true
+log_exit_mgmt = true
+
+[export]
+audit_pattern  = "audit_${symbol}_${timeframe}_window_${win}_${i0}-${i1}.csv"
+trades_pattern = "trades_${symbol}_${timeframe}_window_${win}_${i0}-${i1}.csv"
+summary_dir = "reports"
+
+[validation_targets]
+min_trades_per_window = 8
+min_hit_rate_pct = 20
+min_median_mfe_atr = 1.0
+max_median_mae_atr = 1.2
+min_pass_ratio_pct = 20
+
+[selectors]
+use_high_vol = false

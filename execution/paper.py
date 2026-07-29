@@ -10,6 +10,7 @@ from exits import manage_exit
 class Position:
     side: int = 0
     qty: float = 0.0
+    qty0: float = 0.0  # cantidad al abrir; qty se reduce en los parciales
     entry: float = 0.0
     entry_ts: Any = None # New: Timestamp of entry
     sl: Optional[float] = None
@@ -128,6 +129,7 @@ class PaperBroker:
         self.pos.trade_id = str(uuid4())
         self.pos.side = side
         self.pos.qty = qty
+        self.pos.qty0 = qty
         self.pos.entry = entry_price_with_slippage # This is the slippage-adjusted entry price
         self.pos.entry_ts = ts # Set entry timestamp
         self.pos.entry_atr = atr
@@ -247,6 +249,7 @@ class PaperBroker:
         trade_entry = {
             "ts": ts,
             "entry_ts": self.pos.entry_ts,
+            "qty0": getattr(self.pos, "qty0", self.pos.qty),
             "symbol": self.pos.symbol,
             "tf": self.pos.tf,
             "strategy": self.pos.strategy_name or "TrendV2",
@@ -415,6 +418,7 @@ class PaperBroker:
         trade_entry = {
             "ts": ts,
             "entry_ts": self.pos.entry_ts,
+            "qty0": getattr(self.pos, "qty0", self.pos.qty),
             "symbol": self.pos.symbol,
             "tf": self.pos.tf,
             "strategy": self.pos.strategy_name or "TrendV2",

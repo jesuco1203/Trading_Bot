@@ -299,6 +299,8 @@ def run_single_backtest(
 
     idx = list(df_base.index)
     close_values = df_base["close"].to_numpy(dtype=float)
+    open_values = df_base["open"].to_numpy(dtype=float)
+    entry_on = str(config.get("execution", {}).get("entry_on", "close"))
 
     entries = 0
     partials = 0
@@ -310,6 +312,10 @@ def run_single_backtest(
 
     risk_per_trade_pct = float(risk_cfg.get("risk_per_trade_pct", 0.0) or 0.0)
     starting_equity = float(risk_cfg.get("starting_equity", 0.0) or 0.0)
+    # compound=true dimensiona sobre el capital ACTUAL en vez de sobre el inicial.
+    # Sin esto el backtest no compone y no se puede comparar con una proyección
+    # de interés compuesto.
+    compound = bool(risk_cfg.get("compound", False))
 
     for i in range(warmup, len(df_base)):
         current_ts = idx[i] if i < len(idx) else None
@@ -370,15 +376,24 @@ def run_single_backtest(
                     risk_scale = 1.0
                     if origin == "reentry":
                         risk_scale = float(trend_cfg.get("reentry_size_mult", 1.0) or 1.0)
-                    risk_usd = risk_per_trade_pct * starting_equity * risk_scale
+                    equity_base = float(broker.capital) if compound else starting_equity
+                    risk_usd = risk_per_trade_pct * equity_base * risk_scale
                     qty = risk_usd / sl_pts if sl_pts > 0 else 0.0
+                    # En vivo la señal se conoce AL cerrar la vela, así que no se
+                    # puede ejecutar a ese mismo cierre. entry_on="next_open"
+                    # simula la ejecución realista en la apertura siguiente.
+                    fill_px = float(close_values[i])
+                    if entry_on == "next_open":
+                        if i + 1 >= len(open_values):
+                            continue  # no hay barra siguiente: no se puede ejecutar
+                        fill_px = float(open_values[i + 1])
                     if qty > 0:
                         side_int = 1 if side == "long" else -1
                         try:
                             broker.enter_or_flip(
                                 side=side_int,
                                 qty=qty,
-                                price=float(close_values[i]),
+                                price=fill_px,
                                 sl_pts=sl_pts,
                                 tp_pts=float(getattr(signal, "tp_pts", 0.0) or 0.0),
                                 partial_tp_pts=getattr(signal, "partial_tp_pts", None),

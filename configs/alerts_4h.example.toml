@@ -1,0 +1,15 @@
+# Copia este archivo como alerts_4h.toml y completa los niveles que quieras.
+# El monitor se ejecuta por símbolo; no guarda secretos en el repositorio.
+
+[alerts]
+timeframe = "4h"
+delay_seconds = 10
+require_engulfing = true
+
+# Ejemplo de ejecución:
+# python scripts/alert_4h.py --symbol BTC-USDT-SWAP --price 110000 \
+#   --direction above --once --dry-run
+#
+# Para enviar a Telegram elimina --dry-run y define:
+# TELEGRAM_BOT_TOKEN=...
+# TELEGRAM_CHAT_ID=...

@@ -15,6 +15,7 @@ from typing import Any
 
 
 OKX_CANDLES_URL = "https://www.okx.com/api/v5/market/candles"
+OKX_TICKER_URL = "https://www.okx.com/api/v5/market/ticker"
 TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
@@ -42,6 +43,7 @@ class Alert:
     pattern: str
     direction: str
     level: float | None = None
+    timeframe: str = "4h"
 
 
 def parse_okx_candle(row: list[Any]) -> Candle:
@@ -83,6 +85,17 @@ def fetch_confirmed_candles(symbol: str, timeframe: str = "4h", limit: int = 5) 
     return confirmed_candles(payload)
 
 
+def fetch_current_price(symbol: str) -> float:
+    """Fetch the latest traded price from OKX for display in the UI."""
+    query = urllib.parse.urlencode({"instId": symbol})
+    request = urllib.request.Request(f"{OKX_TICKER_URL}?{query}", headers={"User-Agent": "Trading_Bot/alerts"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if payload.get("code") != "0" or not payload.get("data"):
+        raise RuntimeError(f"OKX respondió con error de ticker: {payload}")
+    return float(payload["data"][0]["last"])
+
+
 def engulfing_direction(previous: Candle, current: Candle) -> str | None:
     """Match the project's classic body-engulfing definition."""
     if current.is_bullish and previous.is_bearish:
@@ -110,6 +123,7 @@ def evaluate_candles(
     level: float | None = None,
     level_direction: str | None = None,
     require_engulfing: bool = True,
+    timeframe: str = "4h",
 ) -> Alert | None:
     """Evaluate the newest confirmed candle exactly once at the caller's tick."""
     if len(candles) < 2:
@@ -124,7 +138,7 @@ def evaluate_candles(
         if not crosses_level(previous, current, level, level_direction):
             return None
     direction = pattern_direction or level_direction or "close"
-    return Alert(symbol, current, pattern_direction or "level_close", direction, level)
+    return Alert(symbol, current, pattern_direction or "level_close", direction, level, timeframe)
 
 
 def format_alert(alert: Alert) -> str:
@@ -136,7 +150,7 @@ def format_alert(alert: Alert) -> str:
         "level_close": "cierre de nivel",
     }.get(alert.pattern, alert.pattern)
     lines = [
-        f"🚨 ALERTA 4H — {alert.symbol}",
+        f"🚨 ALERTA {alert.timeframe.upper()} — {alert.symbol}",
         f"Tipo: {pattern}",
         f"Cierre: {alert.candle.close:g}",
         f"Vela cerrada: {when:%Y-%m-%d %H:%M UTC}",

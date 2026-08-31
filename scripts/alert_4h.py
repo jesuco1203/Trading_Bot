@@ -14,14 +14,22 @@ from monitoring.telegram_alerts import (
 )
 
 
-def next_4h_close(now: datetime | None = None) -> datetime:
-    """Return the next UTC boundary (00/04/08/12/16/20) with a small buffer."""
+def next_candle_close(timeframe: str = "4h", now: datetime | None = None) -> datetime:
+    """Return the next UTC boundary for the supported timeframe."""
     now = now or datetime.now(timezone.utc)
-    next_hour = ((now.hour // 4) + 1) * 4
+    hours = {"3h": 3, "4h": 4}.get(timeframe)
+    if hours is None:
+        raise ValueError("timeframe debe ser '3h' o '4h'")
+    next_hour = ((now.hour // hours) + 1) * hours
     day = now.date()
     if next_hour >= 24:
         return datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
     return datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).replace(hour=next_hour)
+
+
+def next_4h_close(now: datetime | None = None) -> datetime:
+    """Backward-compatible 4h boundary helper."""
+    return next_candle_close("4h", now)
 
 
 def wait_until_close(delay_seconds: int = 10) -> None:
@@ -39,6 +47,7 @@ def run_once(args: argparse.Namespace) -> bool:
         level=args.price,
         level_direction=args.direction,
         require_engulfing=args.require_engulfing,
+        timeframe=args.timeframe,
     )
     if alert is None:
         logging.info("Sin alerta para %s en la última vela cerrada", args.symbol)

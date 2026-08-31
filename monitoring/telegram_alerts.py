@@ -44,6 +44,7 @@ class Alert:
     direction: str
     level: float | None = None
     timeframe: str = "4h"
+    mode: str = "close"
 
 
 def parse_okx_candle(row: list[Any]) -> Candle:
@@ -116,6 +117,15 @@ def crosses_level(previous: Candle, current: Candle, level: float, direction: st
     raise ValueError("direction debe ser 'above' o 'below'")
 
 
+def reaches_level(price: float, level: float, direction: str) -> bool:
+    """Return whether a live price has reached the configured level."""
+    if direction == "above":
+        return price >= level
+    if direction == "below":
+        return price <= level
+    raise ValueError("direction debe ser 'above' o 'below'")
+
+
 def evaluate_candles(
     symbol: str,
     candles: list[Candle],
@@ -150,9 +160,9 @@ def format_alert(alert: Alert) -> str:
         "level_close": "cierre de nivel",
     }.get(alert.pattern, alert.pattern)
     lines = [
-        f"🚨 ALERTA {alert.timeframe.upper()} — {alert.symbol}",
+        f"🚨 ALERTA {'EN VIVO' if alert.mode == 'live' else alert.timeframe.upper()} — {alert.symbol}",
         f"Tipo: {pattern}",
-        f"Cierre: {alert.candle.close:g}",
+        f"{'Precio' if alert.mode == 'live' else 'Cierre'}: {alert.candle.close:g}",
         f"Vela cerrada: {when:%Y-%m-%d %H:%M UTC}",
     ]
     if alert.level is not None:

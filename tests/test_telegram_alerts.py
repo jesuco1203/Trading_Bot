@@ -3,6 +3,7 @@ from datetime import timezone
 from monitoring.telegram_alerts import (
     Candle,
     aggregate_hourly_candles,
+    closes_at_level,
     confirmed_candles,
     crosses_level,
     engulfing_direction,
@@ -27,11 +28,12 @@ def test_bearish_engulfing_is_detected():
     assert engulfing_direction(previous, current) == "bearish"
 
 
-def test_level_requires_a_cross_not_just_being_above():
+def test_level_close_matches_when_the_candle_remains_above():
     previous = candle(1, 100, 105, 99, 104)
     current = candle(2, 104, 110, 103, 108)
-    assert not crosses_level(previous, current, 100, "above")
-    assert crosses_level(previous, current, 105, "above")
+    assert closes_at_level(current, 100, "above")
+    assert closes_at_level(current, 108, "above")
+    assert not closes_at_level(current, 109, "above")
 
 
 def test_evaluate_requires_both_engulfing_and_level_when_configured():

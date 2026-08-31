@@ -141,6 +141,15 @@ def crosses_level(previous: Candle, current: Candle, level: float, direction: st
     raise ValueError("direction debe ser 'above' o 'below'")
 
 
+def closes_at_level(current: Candle, level: float, direction: str) -> bool:
+    """Return whether a confirmed candle closes at or beyond the selected level."""
+    if direction == "above":
+        return current.close >= level
+    if direction == "below":
+        return current.close <= level
+    raise ValueError("direction debe ser 'above' o 'below'")
+
+
 def crosses_live_level(previous_price: float, current_price: float, level: float) -> bool:
     """Return whether a live price crossed a level in either direction."""
     return (previous_price < level <= current_price) or (previous_price > level >= current_price)
@@ -165,7 +174,7 @@ def evaluate_candles(
     if level is not None:
         if level_direction not in ("above", "below"):
             raise ValueError("level_direction debe ser 'above' o 'below'")
-        if not crosses_level(previous, current, level, level_direction):
+        if not closes_at_level(current, level, level_direction):
             return None
     direction = pattern_direction or level_direction or "close"
     return Alert(symbol, current, pattern_direction or "level_close", direction, level, timeframe)
@@ -187,7 +196,7 @@ def format_alert(alert: Alert) -> str:
         f"Vela cerrada: {when:%Y-%m-%d %H:%M UTC}",
     ]
     if alert.level is not None:
-        lines.append(f"Nivel cruzado: {alert.level:g} ({alert.direction})")
+        lines.append(f"Nivel confirmado: {alert.level:g} ({alert.direction})")
     return "\n".join(lines)
 
 

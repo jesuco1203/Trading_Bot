@@ -74,16 +74,36 @@ def confirmed_candles(payload: dict[str, Any]) -> list[Candle]:
     return sorted(parsed, key=lambda candle: candle.timestamp_ms)
 
 
+def aggregate_hourly_candles(candles: list[Candle], hours: int = 3) -> list[Candle]:
+    """Build UTC-aligned multi-hour candles from consecutive closed 1H bars."""
+    hour_ms = 60 * 60 * 1000
+    bucket_ms = hours * hour_ms
+    buckets: dict[int, list[Candle]] = {}
+    for candle in candles:
+        buckets.setdefault((candle.timestamp_ms // bucket_ms) * bucket_ms, []).append(candle)
+
+    aggregated = []
+    for start, group in sorted(buckets.items()):
+        group.sort(key=lambda candle: candle.timestamp_ms)
+        expected = [start + offset * hour_ms for offset in range(hours)]
+        if [candle.timestamp_ms for candle in group] != expected:
+            continue
+        aggregated.append(Candle(start, group[0].open, max(candle.high for candle in group), min(candle.low for candle in group), group[-1].close))
+    return aggregated
+
+
 def fetch_confirmed_candles(symbol: str, timeframe: str = "4h", limit: int = 5) -> list[Candle]:
-    """Fetch only closed candles from OKX's public market endpoint."""
-    query = urllib.parse.urlencode({"instId": symbol, "bar": timeframe.upper(), "limit": limit})
+    """Fetch closed candles; 3h is synthesized from UTC-aligned 1H candles."""
+    is_three_hour = timeframe == "3h"
+    query = urllib.parse.urlencode({"instId": symbol, "bar": "1H" if is_three_hour else timeframe.upper(), "limit": limit * 3 + 3 if is_three_hour else limit})
     request = urllib.request.Request(
         f"{OKX_CANDLES_URL}?{query}",
         headers={"User-Agent": "Trading_Bot/4h-alerts"},
     )
     with urllib.request.urlopen(request, timeout=20) as response:
         payload = json.loads(response.read().decode("utf-8"))
-    return confirmed_candles(payload)
+    candles = confirmed_candles(payload)
+    return aggregate_hourly_candles(candles)[-limit:] if is_three_hour else candles
 
 
 def fetch_current_price(symbol: str) -> float:

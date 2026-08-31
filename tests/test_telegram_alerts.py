@@ -2,6 +2,7 @@ from datetime import timezone
 
 from monitoring.telegram_alerts import (
     Candle,
+    aggregate_hourly_candles,
     confirmed_candles,
     crosses_level,
     engulfing_direction,
@@ -54,3 +55,16 @@ def test_unconfirmed_okx_candle_is_ignored():
     }
     candles = confirmed_candles(payload)
     assert [item.timestamp_ms for item in candles] == [1000]
+
+
+def test_three_hour_candle_is_built_from_three_complete_utc_hours():
+    hour = 60 * 60 * 1000
+    candles = [
+        candle(0, 100, 105, 99, 101),
+        candle(hour, 101, 108, 100, 107),
+        candle(2 * hour, 107, 109, 104, 105),
+    ]
+
+    result = aggregate_hourly_candles(candles)
+
+    assert result == [candle(0, 100, 109, 99, 105)]

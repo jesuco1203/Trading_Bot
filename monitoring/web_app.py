@@ -11,7 +11,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from monitoring.telegram_alerts import Alert, Candle, crosses_live_level, evaluate_candles, fetch_confirmed_candles, fetch_current_price, format_alert, send_telegram
-from scripts.alert_4h import next_candle_close
 import time
 
 
@@ -156,22 +155,32 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def worker() -> None:
+    """Evaluate each close timeframe once, while noticing newly saved alerts promptly."""
+    timeframe_seconds = {"1m": 60, "3h": 3 * 60 * 60, "4h": 4 * 60 * 60}
+    processed_closes: dict[str, int] = {}
     while True:
-        items = [item for item in load_config() if item.get("enabled", True)]
+        items = [item for item in load_config() if item.get("enabled", True) and item.get("mode", "close") == "close"]
         timeframes = {item.get("timeframe", "4h") for item in items}
-        targets = {timeframe: next_candle_close(timeframe) for timeframe in timeframes or {"4h"}}
-        target = min(targets.values())
-        time.sleep(max(0, (target.timestamp() + CHECK_DELAY) - time.time()))
-        due_timeframes = {timeframe for timeframe, scheduled in targets.items() if scheduled == target}
-        for item in items:
-            timeframe = item.get("timeframe", "4h")
-            if timeframe not in due_timeframes: continue
-            try:
-                candles = fetch_confirmed_candles(item["symbol"], timeframe, 5)
-                alert = evaluate_candles(item["symbol"], candles, level=item.get("price"), level_direction=item.get("direction"), require_engulfing=item.get("require_engulfing", True), timeframe=timeframe)
-                if alert:
-                    send_telegram(format_alert(alert)); logging.info("Alerta enviada: %s", item["symbol"])
-            except Exception: logging.exception("Error procesando %s", item.get("symbol"))
+        now = time.time()
+        for timeframe in timeframes:
+            seconds = timeframe_seconds.get(timeframe)
+            if seconds is None:
+                logging.error("Timeframe no soportado: %s", timeframe)
+                continue
+            close_timestamp = int(now) // seconds * seconds
+            if now < close_timestamp + CHECK_DELAY or processed_closes.get(timeframe) == close_timestamp:
+                continue
+            processed_closes[timeframe] = close_timestamp
+            for item in items:
+                if item.get("timeframe", "4h") != timeframe:
+                    continue
+                try:
+                    candles = fetch_confirmed_candles(item["symbol"], timeframe, 5)
+                    alert = evaluate_candles(item["symbol"], candles, level=item.get("price"), level_direction=item.get("direction"), require_engulfing=item.get("require_engulfing", True), timeframe=timeframe)
+                    if alert:
+                        send_telegram(format_alert(alert)); logging.info("Alerta enviada: %s", item["symbol"])
+                except Exception: logging.exception("Error procesando %s", item.get("symbol"))
+        time.sleep(1)
 
 
 def live_worker() -> None:

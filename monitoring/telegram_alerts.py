@@ -95,7 +95,11 @@ def aggregate_hourly_candles(candles: list[Candle], hours: int = 3) -> list[Cand
 def fetch_confirmed_candles(symbol: str, timeframe: str = "4h", limit: int = 5) -> list[Candle]:
     """Fetch closed candles; 3h is synthesized from UTC-aligned 1H candles."""
     is_three_hour = timeframe == "3h"
-    query = urllib.parse.urlencode({"instId": symbol, "bar": "1H" if is_three_hour else timeframe.upper(), "limit": limit * 3 + 3 if is_three_hour else limit})
+    bars = {"1m": "1m", "4h": "4H"}
+    bar = "1H" if is_three_hour else bars.get(timeframe)
+    if bar is None:
+        raise ValueError("timeframe debe ser '1m', '3h' o '4h'")
+    query = urllib.parse.urlencode({"instId": symbol, "bar": bar, "limit": limit * 3 + 3 if is_three_hour else limit})
     request = urllib.request.Request(
         f"{OKX_CANDLES_URL}?{query}",
         headers={"User-Agent": "Trading_Bot/4h-alerts"},

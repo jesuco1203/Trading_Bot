@@ -18,3 +18,12 @@ def test_editing_live_alert_rearms_and_discards_stale_price():
 def test_close_alert_requires_direction():
     with pytest.raises(ValueError):
         normalize_alert({"symbol": "BTC-USDT-SWAP", "mode": "close", "timeframe": "4h", "price": 1})
+
+
+def test_one_minute_close_alert_is_valid_for_testing():
+    alert = normalize_alert({
+        "symbol": "BTC-USDT-SWAP", "mode": "close", "timeframe": "1m",
+        "price": 1, "direction": "above",
+    })
+
+    assert alert["timeframe"] == "1m"

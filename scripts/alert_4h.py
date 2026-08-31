@@ -17,14 +17,11 @@ from monitoring.telegram_alerts import (
 def next_candle_close(timeframe: str = "4h", now: datetime | None = None) -> datetime:
     """Return the next UTC boundary for the supported timeframe."""
     now = now or datetime.now(timezone.utc)
-    hours = {"3h": 3, "4h": 4}.get(timeframe)
-    if hours is None:
-        raise ValueError("timeframe debe ser '3h' o '4h'")
-    next_hour = ((now.hour // hours) + 1) * hours
-    day = now.date()
-    if next_hour >= 24:
-        return datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
-    return datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).replace(hour=next_hour)
+    seconds = {"1m": 60, "3h": 3 * 60 * 60, "4h": 4 * 60 * 60}.get(timeframe)
+    if seconds is None:
+        raise ValueError("timeframe debe ser '1m', '3h' o '4h'")
+    next_timestamp = (int(now.timestamp()) // seconds + 1) * seconds
+    return datetime.fromtimestamp(next_timestamp, tz=timezone.utc)
 
 
 def next_4h_close(now: datetime | None = None) -> datetime:

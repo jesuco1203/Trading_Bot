@@ -54,7 +54,7 @@ button{margin-top:1rem;background:#2e83f7;border:0;cursor:pointer;font-weight:60
 const list=document.querySelector('#list');const form=document.querySelector('#form');
 async function load(){const r=await fetch('/api/alerts');const a=await r.json();list.innerHTML=a.length?'<h2>Alertas configuradas</h2>'+a.map((x,i)=>`<div class="alert"><div><b>${x.symbol}</b> · <b>${x.timeframe||'4h'}</b><br>${x.direction==='above'?'Por encima':'Por debajo'} de <b>${x.price}</b><br><span class="muted">${x.require_engulfing?'Con envolvente':'Solo precio'} · ${x.enabled?'Activa':'Pausada'}</span></div><button class="danger" onclick="removeAlert(${i})">Eliminar</button></div>`).join(''):'<p class="muted">No hay alertas configuradas.</p>'}
 async function updatePrice(){const symbol=form.elements.symbol.value.trim();if(!symbol)return;document.querySelector('#price-status').textContent='consultando…';try{const r=await fetch('/api/price?symbol='+encodeURIComponent(symbol));const d=await r.json();if(!r.ok)throw new Error(d.error);document.querySelector('#current-price').textContent=Number(d.price).toLocaleString('en-US',{maximumFractionDigits:8});document.querySelector('#price-status').textContent='OKX · actualizado '+new Date().toLocaleTimeString()}catch(e){document.querySelector('#current-price').textContent='—';document.querySelector('#price-status').textContent=e.message}}
-form.elements.symbol.addEventListener('change',updatePrice);form.elements.symbol.addEventListener('blur',updatePrice);setInterval(updatePrice,30000);updatePrice();
+form.elements.symbol.addEventListener('change',updatePrice);form.elements.symbol.addEventListener('blur',updatePrice);setInterval(updatePrice,3000);updatePrice();
 form.onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form));d.price=Number(d.price);d.require_engulfing=d.require_engulfing==='true';d.enabled=true;await fetch('/api/alerts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});form.reset();updatePrice();load()};
 async function removeAlert(i){await fetch('/api/alerts/'+i,{method:'DELETE'});load()}load();
 </script></body></html>"""
@@ -98,7 +98,9 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import parse_qs
             symbol = parse_qs(parsed.query).get("symbol", [""])[0].strip()
             if not symbol: return self._json({"error": "símbolo requerido"}, 400)
-            try: return self._json({"symbol": symbol, "price": fetch_current_price(symbol)})
+            try:
+                price = fetch_current_price(symbol)
+                return self._json({"symbol": symbol, "price": price})
             except Exception: return self._json({"error": "no se pudo consultar el precio"}, 502)
         body = HTML.encode("utf-8")
         self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")

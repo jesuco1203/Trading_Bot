@@ -10,6 +10,7 @@ from exits import manage_exit
 class Position:
     side: int = 0
     qty: float = 0.0
+    qty0: float = 0.0  # cantidad al abrir; qty se reduce en los parciales
     entry: float = 0.0
     entry_ts: Any = None # New: Timestamp of entry
     sl: Optional[float] = None
@@ -69,7 +70,8 @@ class PaperBroker:
                  sl_atr: float = 0.0, tp_r_primary: float = 0.0, tp_primary_ratio: float = 0.0, tp_final_r: float = 0.0,
                  be_trigger_atr: float = 0.0, trail_atr_mult: float = 0.0, time_stop_bars: int = 0,
                  trail_activate_r: float = 1.0, partial_take_r: float = 0.0, partial_take_frac: float = 0.0,
-                 partial_be_eps_atr: float = 0.05):
+                 partial_be_eps_atr: float = 0.05,
+                 risk_manager: Any = None):
         self.initial_capital = initial_capital
         self.capital = initial_capital
         self.taker_fee = taker_fee
@@ -97,6 +99,7 @@ class PaperBroker:
         self.partial_take_r = partial_take_r
         self.partial_take_frac = partial_take_frac
         self.partial_be_eps_atr = partial_be_eps_atr
+        self._risk_manager = risk_manager
 
     def get_equity(self):
         return self.capital
@@ -126,6 +129,7 @@ class PaperBroker:
         self.pos.trade_id = str(uuid4())
         self.pos.side = side
         self.pos.qty = qty
+        self.pos.qty0 = qty
         self.pos.entry = entry_price_with_slippage # This is the slippage-adjusted entry price
         self.pos.entry_ts = ts # Set entry timestamp
         self.pos.entry_atr = atr
@@ -244,6 +248,8 @@ class PaperBroker:
 
         trade_entry = {
             "ts": ts,
+            "entry_ts": self.pos.entry_ts,
+            "qty0": getattr(self.pos, "qty0", self.pos.qty),
             "symbol": self.pos.symbol,
             "tf": self.pos.tf,
             "strategy": self.pos.strategy_name or "TrendV2",
@@ -261,6 +267,18 @@ class PaperBroker:
             "tag": self.pos.metadata.get('tag') or "",
         }
         self.trades.append(trade_entry)
+
+        if self._risk_manager is not None:
+            try:
+                self._risk_manager.on_trade_close(
+                    idx=i,
+                    pnl_r_multiple=rr_achieved,
+                    pnl=pnl_net,
+                    equity=self.capital,
+                    ts=ts,
+                )
+            except Exception:
+                logging.exception("RiskManager.on_trade_close failed")
         
         self.pos = Position()
         self.exits_count += 1
@@ -399,6 +417,8 @@ class PaperBroker:
 
         trade_entry = {
             "ts": ts,
+            "entry_ts": self.pos.entry_ts,
+            "qty0": getattr(self.pos, "qty0", self.pos.qty),
             "symbol": self.pos.symbol,
             "tf": self.pos.tf,
             "strategy": self.pos.strategy_name or "TrendV2",

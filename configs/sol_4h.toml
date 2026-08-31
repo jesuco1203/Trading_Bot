@@ -1,4 +1,4 @@
-# BTC 4h — BASELINE.
+# SOL 4h — OUT-OF-SAMPLE puro. Idéntico a btc_4h.toml salvo el símbolo.
 # Objetivo: medir TrendV2 en 4H con LOS MISMOS parámetros que btc_30m.toml,
 # para aislar el efecto del timeframe antes de tocar nada más.
 # Sólo cambian: símbolo/timeframe, ruta de datos y warmup.
@@ -8,14 +8,14 @@
 # Por eso la ruta va explícita en [data].path.
 
 [market]
-symbol = "BTC-USDT-SWAP"
+symbol = "SOL-USDT-SWAP"
 timeframe = "4h"
-symbols = ["BTC-USDT-SWAP"]
+symbols = ["SOL-USDT-SWAP"]
 timeframes = ["4h"]
 tick_value = 0.01
 
 [data]
-path = "data/okx/BTC-USDT-SWAP/4h/ohlcv.parquet"
+path = "data/okx/SOL-USDT-SWAP/4h/ohlcv.parquet"
 root = "data/okx"
 
 [features]

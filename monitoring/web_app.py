@@ -1,0 +1,224 @@
+"""Mini interfaz web y worker para configurar alertas 3h/4h."""
+from __future__ import annotations
+
+import base64
+import json
+import logging
+import os
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+from monitoring.telegram_alerts import Alert, Candle, crosses_live_level, evaluate_candles, fetch_confirmed_candles, fetch_current_price, format_alert, send_telegram
+import time
+
+
+CONFIG_PATH = Path(os.environ.get("ALERT_CONFIG_PATH", "data/alerts.json"))
+HOST = os.environ.get("ALERT_HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8080"))
+CHECK_DELAY = int(os.environ.get("ALERT_DELAY_SECONDS", "10"))
+
+
+def load_config() -> list[dict]:
+    if not CONFIG_PATH.exists():
+        return []
+    try:
+        value = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return value if isinstance(value, list) else []
+    except (OSError, json.JSONDecodeError):
+        logging.exception("No se pudo leer %s", CONFIG_PATH)
+        return []
+
+
+def save_config(alerts: list[dict]) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp = CONFIG_PATH.with_suffix(".tmp")
+    temp.write_text(json.dumps(alerts, indent=2, ensure_ascii=False), encoding="utf-8")
+    temp.replace(CONFIG_PATH)
+
+
+def normalize_alert(data: dict) -> dict:
+    """Validate form data and reset transient state when an alert is saved."""
+    mode = data.get("mode")
+    if mode not in ("live", "close") or data.get("timeframe") not in ("1m", "3h", "4h") or not data.get("symbol") or float(data["price"]) <= 0:
+        raise ValueError
+    if mode == "close" and data.get("direction") not in ("above", "below"):
+        raise ValueError
+    data["price"] = float(data["price"])
+    data["enabled"] = bool(data.get("enabled", True))
+    data["live_armed"] = True
+    data.pop("live_last_price", None)
+    if mode == "live":
+        data.pop("direction", None)
+    return data
+
+
+HTML = """<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alertas Trading</title><style>
+body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;background:#101318;color:#eef2f7}
+main{background:#1a2029;padding:1.4rem;border-radius:14px}h1{margin-top:0;font-size:1.35rem}
+label{display:block;margin:.8rem 0 .25rem;color:#aeb8c6}input,select,button{width:100%;box-sizing:border-box;padding:.7rem;border-radius:8px;border:1px solid #3c4654;background:#11161d;color:#fff;font-size:1rem}
+button{margin-top:1rem;background:#2e83f7;border:0;cursor:pointer;font-weight:600}.row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}[hidden]{display:none!important}
+.alert{display:flex;justify-content:space-between;gap:1rem;border-top:1px solid #38414e;padding:1rem 0}.muted{color:#aeb8c6;font-size:.9rem}.danger,.secondary{width:auto;margin:0;padding:.45rem .7rem}.danger{background:#933d4c}.secondary{background:#465568}
+</style></head><body><main><h1>Alertas de velas</h1><p class="muted">La comprobación se realiza una vez después de cada cierre de 1m, 3h o 4h en UTC.</p><p>Precio actual: <strong id="current-price">—</strong> <span id="price-status" class="muted"></span></p>
+<form id="form"><div class="row"><div><label>Símbolo</label><input name="symbol" value="BTC-USDT-SWAP" required></div><div><label>Modo</label><select name="mode"><option value="close">Al cierre de vela</option><option value="live">En vivo al tocar el precio</option></select></div></div><div class="row"><div><label>Precio objetivo</label><input name="price" type="number" step="any" required></div><div class="close-only"><label>Timeframe</label><select name="timeframe"><option value="4h">4 horas</option><option value="3h">3 horas</option><option value="1m">1 minuto (prueba)</option></select></div></div><div class="row close-only"><div><label>Condición</label><select name="direction"><option value="above">Por encima</option><option value="below">Por debajo</option></select></div><div><label>Patrón</label><select name="require_engulfing"><option value="true">Exigir envolvente</option><option value="false">Solo nivel de precio</option></select></div></div><p id="live-help" class="muted" hidden>Te avisará cuando el precio cruce este nivel, ya sea subiendo o bajando.</p>
+<button id="save">Guardar alerta</button><button id="cancel" class="secondary" type="button" hidden>Cancelar edición</button></form><section id="list"></section></main><script>
+const list=document.querySelector('#list');const form=document.querySelector('#form');
+let alerts=[],editing=null;async function load(){const r=await fetch('/api/alerts');alerts=await r.json();list.innerHTML=alerts.length?'<h2>Alertas configuradas</h2>'+alerts.map((x,i)=>`<div class="alert"><div><b>${x.symbol}</b> · <b>${x.mode==='live'?'EN VIVO':(x.timeframe||'4h')}</b><br>${x.mode==='live'?'Al tocar ':`${x.direction==='above'?'Por encima':'Por debajo'} de `}<b>${x.price}</b><br><span class="muted">${x.mode==='live'?'Se rearma al cruzar de vuelta':`${x.require_engulfing?'Con envolvente':'Solo precio'} · ${x.enabled?'Activa':'Pausada'}`}</span></div><div><button class="secondary" onclick="editAlert(${i})">Editar</button><button class="danger" onclick="removeAlert(${i})">Eliminar</button></div></div>`).join(''):'<p class="muted">No hay alertas configuradas.</p>'}
+async function updatePrice(){const symbol=form.elements.symbol.value.trim();if(!symbol)return;document.querySelector('#price-status').textContent='consultando…';try{const r=await fetch('/api/price?symbol='+encodeURIComponent(symbol));const d=await r.json();if(!r.ok)throw new Error(d.error);document.querySelector('#current-price').textContent=Number(d.price).toLocaleString('en-US',{maximumFractionDigits:8});document.querySelector('#price-status').textContent='OKX · actualizado '+new Date().toLocaleTimeString()}catch(e){document.querySelector('#current-price').textContent='—';document.querySelector('#price-status').textContent=e.message}}
+function syncMode(){const live=form.elements.mode.value==='live';document.querySelectorAll('.close-only').forEach(x=>x.hidden=live);document.querySelector('#live-help').hidden=!live}form.elements.mode.addEventListener('change',syncMode);syncMode();
+form.elements.symbol.addEventListener('change',updatePrice);form.elements.symbol.addEventListener('blur',updatePrice);setInterval(updatePrice,3000);updatePrice();
+function clearEditor(){editing=null;form.reset();document.querySelector('#save').textContent='Guardar alerta';document.querySelector('#cancel').hidden=true;syncMode();updatePrice()}
+function editAlert(i){const x=alerts[i];editing=i;for(const [key,value] of Object.entries(x)){if(form.elements[key])form.elements[key].value=String(value)}if(x.mode==='live')form.elements.mode.value='live';document.querySelector('#save').textContent='Guardar cambios';document.querySelector('#cancel').hidden=false;syncMode();updatePrice();window.scrollTo({top:0,behavior:'smooth'})}
+document.querySelector('#cancel').onclick=clearEditor;
+form.onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(form));d.price=Number(d.price);d.require_engulfing=d.require_engulfing==='true';d.enabled=true;if(d.mode==='live')delete d.direction;const url=editing===null?'/api/alerts':'/api/alerts/'+editing;await fetch(url,{method:editing===null?'POST':'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});clearEditor();load()};
+async function removeAlert(i){await fetch('/api/alerts/'+i,{method:'DELETE'});load()}load();
+</script></body></html>"""
+
+
+def authorized(handler: BaseHTTPRequestHandler) -> bool:
+    password = os.environ.get("APP_PASSWORD")
+    if not password:
+        return True
+    value = handler.headers.get("Authorization", "")
+    try:
+        scheme, encoded = value.split(" ", 1)
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        return scheme.lower() == "basic" and decoded == f"admin:{password}"
+    except (ValueError, UnicodeDecodeError):
+        return False
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _auth(self) -> bool:
+        if authorized(self):
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Trading alerts"')
+        self.end_headers()
+        return False
+
+    def _json(self, value: object, status: int = 200) -> None:
+        body = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        if not self._auth(): return
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/alerts": return self._json(load_config())
+        if parsed.path == "/api/price":
+            from urllib.parse import parse_qs
+            symbol = parse_qs(parsed.query).get("symbol", [""])[0].strip()
+            if not symbol: return self._json({"error": "símbolo requerido"}, 400)
+            try:
+                price = fetch_current_price(symbol)
+                return self._json({"symbol": symbol, "price": price})
+            except Exception: return self._json({"error": "no se pudo consultar el precio"}, 502)
+        body = HTML.encode("utf-8")
+        self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        if not self._auth(): return
+        if urlparse(self.path).path != "/api/alerts": return self._json({"error":"not found"}, 404)
+        try:
+            data = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            data = normalize_alert(data)
+            alerts = load_config(); alerts.append(data); save_config(alerts); self._json(data, 201)
+        except (ValueError, TypeError, json.JSONDecodeError): self._json({"error":"configuración inválida"}, 400)
+
+    def do_PUT(self) -> None:
+        if not self._auth(): return
+        parts = urlparse(self.path).path.split("/")
+        if len(parts) != 4 or parts[:3] != ["", "api", "alerts"]: return self._json({"error":"not found"}, 404)
+        try:
+            index = int(parts[3])
+            data = normalize_alert(json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0")))))
+            alerts = load_config(); alerts[index] = data; save_config(alerts); self._json(data)
+        except (ValueError, TypeError, IndexError, json.JSONDecodeError): self._json({"error":"alerta no encontrada o configuración inválida"}, 404)
+
+    def do_DELETE(self) -> None:
+        if not self._auth(): return
+        parts = urlparse(self.path).path.split("/")
+        if len(parts) != 4 or parts[:3] != ["", "api", "alerts"]: return self._json({"error":"not found"}, 404)
+        try: index = int(parts[3]); alerts = load_config(); alerts.pop(index); save_config(alerts); self._json({"ok":True})
+        except (ValueError, IndexError): self._json({"error":"alerta no encontrada"}, 404)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        logging.info("%s - %s", self.address_string(), fmt % args)
+
+
+def worker() -> None:
+    """Evaluate each close timeframe once, while noticing newly saved alerts promptly."""
+    timeframe_seconds = {"1m": 60, "3h": 3 * 60 * 60, "4h": 4 * 60 * 60}
+    processed_closes: dict[str, int] = {}
+    while True:
+        items = [item for item in load_config() if item.get("enabled", True) and item.get("mode", "close") == "close"]
+        timeframes = {item.get("timeframe", "4h") for item in items}
+        now = time.time()
+        for timeframe in timeframes:
+            seconds = timeframe_seconds.get(timeframe)
+            if seconds is None:
+                logging.error("Timeframe no soportado: %s", timeframe)
+                continue
+            close_timestamp = int(now) // seconds * seconds
+            if now < close_timestamp + CHECK_DELAY or processed_closes.get(timeframe) == close_timestamp:
+                continue
+            processed_closes[timeframe] = close_timestamp
+            for item in items:
+                if item.get("timeframe", "4h") != timeframe:
+                    continue
+                try:
+                    candles = fetch_confirmed_candles(item["symbol"], timeframe, 5)
+                    alert = evaluate_candles(item["symbol"], candles, level=item.get("price"), level_direction=item.get("direction"), require_engulfing=item.get("require_engulfing", True), timeframe=timeframe)
+                    if alert:
+                        send_telegram(format_alert(alert)); logging.info("Alerta enviada: %s", item["symbol"])
+                except Exception: logging.exception("Error procesando %s", item.get("symbol"))
+        time.sleep(1)
+
+
+def live_worker() -> None:
+    """Poll live alerts frequently; candle alerts remain close-only."""
+    while True:
+        alerts = load_config()
+        changed = False
+        for item in alerts:
+            if not item.get("enabled", True) or item.get("mode", "close") != "live":
+                continue
+            try:
+                price = fetch_current_price(item["symbol"])
+                level = float(item["price"])
+                previous_price = item.get("live_last_price")
+                item["live_last_price"] = price
+                if previous_price is None:
+                    changed = True
+                    continue
+                if bool(item.get("live_armed", True)) and crosses_live_level(float(previous_price), price, level):
+                    candle = Candle(int(time.time() * 1000), price, price, price, price)
+                    send_telegram(format_alert(Alert(item["symbol"], candle, "live_level", "touch", level, "live", "live")))
+                    logging.info("Alerta en vivo enviada: %s", item["symbol"])
+                    item["live_armed"] = False
+                    changed = True
+                elif not item.get("live_armed", True) and crosses_live_level(float(previous_price), price, level):
+                    item["live_armed"] = True
+                    changed = True
+                else:
+                    changed = True
+            except Exception:
+                logging.exception("Error procesando alerta en vivo de %s", item.get("symbol"))
+        if changed:
+            save_config(alerts)
+        time.sleep(3)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    threading.Thread(target=worker, daemon=True, name="4h-alert-worker").start()
+    threading.Thread(target=live_worker, daemon=True, name="live-alert-worker").start()
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

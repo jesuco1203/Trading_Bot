@@ -117,13 +117,9 @@ def crosses_level(previous: Candle, current: Candle, level: float, direction: st
     raise ValueError("direction debe ser 'above' o 'below'")
 
 
-def reaches_level(price: float, level: float, direction: str) -> bool:
-    """Return whether a live price has reached the configured level."""
-    if direction == "above":
-        return price >= level
-    if direction == "below":
-        return price <= level
-    raise ValueError("direction debe ser 'above' o 'below'")
+def crosses_live_level(previous_price: float, current_price: float, level: float) -> bool:
+    """Return whether a live price crossed a level in either direction."""
+    return (previous_price < level <= current_price) or (previous_price > level >= current_price)
 
 
 def evaluate_candles(
@@ -158,6 +154,7 @@ def format_alert(alert: Alert) -> str:
         "bullish": "envolvente alcista",
         "bearish": "envolvente bajista",
         "level_close": "cierre de nivel",
+        "live_level": "precio alcanzado",
     }.get(alert.pattern, alert.pattern)
     lines = [
         f"🚨 ALERTA {'EN VIVO' if alert.mode == 'live' else alert.timeframe.upper()} — {alert.symbol}",
